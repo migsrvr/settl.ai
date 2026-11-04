@@ -1,0 +1,146 @@
+@import "tailwindcss";
+
+/* Tokens from docs/superpowers/specs/2026-11-03-settl-ui-design.md, section 2 */
+@theme {
+  --color-*: initial;
+  --color-paper: #f5f4f0;
+  --color-surface: #fdfcf9;
+  --color-well: #efede7;
+  --color-rule: #e3e1da;
+  --color-edge: #8d8c88;
+  --color-ink: #17181c;
+  --color-ink-hover: #34353b;
+  --color-ink-2: #47484e;
+  --color-muted: #5a5b61;
+  --color-on-ink: #f5f4f0;
+  --color-saffron: #e9a92a;
+  --color-saffron-well: #f8e7bf;
+  --color-focus: #b07a0e;
+  --color-paid: #11643f;
+  --color-paid-bg: #e1f1e6;
+  --color-neutral: #3c3d42;
+  --color-neutral-bg: #ebeae5;
+  --color-blocked: #a3271f;
+  --color-blocked-bg: #f9e3df;
+  --color-blocked-edge: #c9776e;
+  --color-info: #23456e;
+  --color-info-bg: #e3eaf3;
+  --color-info-tint: #f1f4f9;
+  --color-code: #ebeae5;
+  --color-code-dim: #b5b6bc;
+  --color-code-chip: #2a2b31;
+
+  --font-sans: var(--font-plex-sans), system-ui, sans-serif;
+  --font-display: var(--font-schibsted), var(--font-plex-sans), sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+
+  --text-xs: 13px;
+  --text-xs--line-height: 1.45;
+  --text-sm: 15px;
+  --text-sm--line-height: 1.5;
+  --text-base: 16px;
+  --text-base--line-height: 1.5;
+  --text-lg: 20px;
+  --text-lg--line-height: 1.35;
+  --text-xl: 25px;
+  --text-xl--line-height: 1.2;
+  --text-2xl: 31px;
+  --text-2xl--line-height: 1.15;
+  --text-3xl: 39px;
+  --text-3xl--line-height: 1.1;
+  --text-4xl: 49px;
+  --text-4xl--line-height: 1.05;
+  --text-5xl: 61px;
+  --text-5xl--line-height: 1.04;
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+
+  --animate-rise: rise 220ms var(--ease-out);
+  --animate-progress: progress 2.4s linear forwards;
+
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes progress {
+    from {
+      transform: scaleX(0.06);
+    }
+    to {
+      transform: scaleX(0.94);
+    }
+  }
+}
+
+@layer base {
+  html,
+  body {
+    overflow-x: clip;
+    background: var(--color-paper);
+    color: var(--color-ink);
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.5;
+    font-synthesis: none;
+    font-variant-numeric: tabular-nums;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  input:focus-visible,
+  select:focus-visible {
+    outline-offset: 0;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+}
+
+@utility press {
+  transition: transform 160ms var(--ease-out);
+  &:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .press {
+    transition: none;
+  }
+  .animate-rise {
+    animation: none;
+  }
+  .animate-progress {
+    animation: none;
+    transform: scaleX(0.94);
+  }
+}
