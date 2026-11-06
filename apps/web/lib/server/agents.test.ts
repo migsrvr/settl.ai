@@ -30,8 +30,14 @@ describe("buyer agent lifecycle", () => {
     const s = setup(); const result = await s.createAgent("buyer", { ...policy, name: "Bookkeeper 2" });
     expect(result.status).toBe("active"); expect(result.apiKey).toMatch(/^stl_agent_/);
     expect(s.chain.registerDevice).toHaveBeenCalledOnce(); expect(s.chain.registerAgent).toHaveBeenCalledOnce();
-    expect(s.agent()).toMatchObject({ status: "active", agentSecretEnc: "encrypted-agent" });
+    expect(s.agent()).toMatchObject({ status: "active", agentSecretEnc: "encrypted-agent", cachedBalance: 0n, balanceUpdatedAt: NOW });
     expect(JSON.stringify(s.tx.agentApiKey.create.mock.calls)).not.toContain(result.apiKey!);
+  });
+  it("skips provider table lookup when allowlist is empty", async () => {
+    const s = setup();
+    const result = await s.createAgent("buyer", { ...policy, allowlist: [], name: "No Providers" });
+    expect(result.status).toBe("active");
+    expect(s.tx.provider.findMany).not.toHaveBeenCalled();
   });
   it("retains the owner lease between successful registration steps", async () => {
     const s = setup(); s.chain.registerAgent.mockImplementation(async () => {

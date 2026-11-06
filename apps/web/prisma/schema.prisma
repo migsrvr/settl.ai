@@ -104,16 +104,19 @@ model Org {
 }
 
 model Provider {
-  id             String   @id @default(cuid())
-  orgId          String   @unique @map("org_id")
-  displayName    String   @map("display_name")
-  merchantWallet String   @unique @map("merchant_wallet")
-  createdAt      DateTime @default(now()) @map("created_at")
-  org            Org      @relation(fields: [orgId], references: [id], onDelete: Restrict)
-  endpoints      Endpoint[]
-  approvals      Approval[]
-  claims         Claim[]
-  settings       ProviderSettings?
+  id                      String    @id @default(cuid())
+  orgId                   String    @unique @map("org_id")
+  displayName             String    @map("display_name")
+  merchantWallet          String    @unique @map("merchant_wallet")
+  // Observed ledger cache only; never infer a payout without an on-chain claim.
+  cachedPendingBalance    BigInt?   @map("cached_pending_balance")
+  pendingBalanceUpdatedAt DateTime? @map("pending_balance_updated_at")
+  createdAt               DateTime  @default(now()) @map("created_at")
+  org                     Org       @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  endpoints               Endpoint[]
+  approvals               Approval[]
+  claims                  Claim[]
+  settings                ProviderSettings?
 
   @@map("providers")
 }
@@ -223,6 +226,7 @@ model Quote {
 
   @@unique([agentId, nonce])
   @@index([agentId, status, createdAt])
+  @@index([endpointId, createdAt])
   @@map("quotes")
 }
 
@@ -243,6 +247,7 @@ model Payment {
   quote            Quote         @relation(fields: [quoteId], references: [id], onDelete: Restrict)
 
   @@index([status, submittedAt])
+  @@index([status, confirmedAt])
   @@map("payments")
 }
 
@@ -392,5 +397,6 @@ model Claim {
   provider    Provider    @relation(fields: [providerId], references: [id], onDelete: Restrict)
 
   @@index([providerId, status])
+  @@index([providerId, createdAt])
   @@map("claims")
 }

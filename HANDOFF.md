@@ -2,6 +2,16 @@
 
 Last updated 2026-11-07 by Codex. Read this first, then the docs it links to.
 
+## Handbook README and pitch preparation, Nov 7
+
+The user requested repository inspection, a pitch deck and a public GitHub monorepo README in the supplied Builder Handbook format. The existing `migsrvr/settl.ai` repository is already public. The root README now follows all 13 required sections in order, with real source/line links, handbook contract IDs, current per-call OCR terms, historical testnet hashes and actual deployed screenshots. The user supplied **Miggy Rivera**, Discord **`_ra1ve`**; the required two-minute video does not exist yet and is marked missing. Small provider/agent environment templates contain no credentials. See `docs/SUBMISSION.md`, `docs/REPOSITORY_REVIEW.md` and `docs/pitch/PITCH_GUIDE.md` for submission mapping, inspection findings and a five-minute pitch including a 90-second live-demo slot.
+
+The supplied handbook (updated Nov5) says submission closes **Nov7 at noon Philippine time**, conflicting with older Nov8 8AM notes below. Keep that conflict explicit until a later organizer announcement is supplied. Landing/stage UI still contains older outcome-first copy, placeholder SDK snippets and old displayed contract IDs; the new judging materials describe current source behavior and label `/stage` scripted.
+
+Fresh deployed dashboard reads showed current per-call prices and a Codex Purchasing Agent PHP2 paid record at Nov6 18:05:23 UTC, tx `56a799be36aba98be4c8c33cf120fa542010cda0898b4ee9f0d9eec538711faa`. This task did not initiate that purchase or independently reverify its ledger data. Buyer UI still showed pending top-ups alongside one completed load. No database/chain mutation or reconciliation occurred.
+
+Fresh Windows checks on Node24.19.0: **tests failed** (missing Windows Rollup native optional dependency), **typecheck failed** (workspace SDK/Stellar resolution and consequent types), **lint passed**, **build failed** (`prisma` CLI unavailable). Earlier Linux752-test passes remain historical evidence. Performance-related schema/timing/docs changes appeared concurrently and are preserved outside this task's scope. No dependency reinstall, secret inspection, commit, push or branch switch occurred. Video creation and explicit commit/push authorization remain separate follow-up items.
+
 ## Hosted mock OCR billing applied to Neon, Nov 7
 
 The user explicitly authorized applying the prepared database update and accessing the configured Neon database. A credential-safe read verified the original `resibo_parse` product (provider `resibo`, active, price 1,333,334 stroops / PHP 2) against the hosted MCP service listing before any write. The existing `apps/web/.env.local` connection was loaded in place using the project client; connection strings and credentials were not printed or copied to the validation environment.
