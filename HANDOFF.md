@@ -54,16 +54,37 @@ docs/superpowers        specs and plans
 | `npm run lint` | ESLint for apps/web |
 | `npm run build` | Production build of apps/web (typechecks too) |
 
-**Demo sign-in:** pick a workspace on `/login` (`mara@example.com` is the provider, `juan@example.com` the buyer). Any password works.
+**Demo sign-in:** pick a workspace on `/login` (Providers: `mara@example.com` ResiboAI, `geoph@example.com` GeoPH; Buyers: `juan@example.com` Juan's Accounting, `acme@example.com` Acme AI Corp) or enter any registered organization's email. Use the in-app sidebar Workspace Switcher to switch workspaces with 1-click.
 
 ## Status
-**Latest checkpoint, Nov 6 (Gemini report):** All 10 phases are implemented, integrated, synced to Neon Postgres, and fully verified green:
-- `npm test`: 634/634 tests passing across all 7 workspaces (`web` 466, `stellar` 52, `sdk` 49, `resibo` 28, `agent` 22, `core` 10, `verifier` 7).
+**Latest checkpoint, Nov 6 (Gemini report) — 100% Real Live Demonstration Passed:**
+- **Zero Mocks, 100% Real Testnet Execution:** Executed `scripts/demo-e2e.ts` covering the entire Settl.ai lifecycle against live services:
+  1. Discovery: Discovered live endpoints (`resibo_parse`, `resibo_pro`, `geoph_lookup`) through hosted `/mcp`.
+  2. Escrow & Policy: Read live native XLM escrow balance (33,333,334 stroops / ₱50.00) & hard Soroban guardrails.
+  3. Settl on Result (Clean Receipt): Verified OCR passing confidence, automatically settled ₱2.00 (1,333,334 stroops) on Stellar testnet: [Tx `fcb5d00a...`](https://stellar.expert/explorer/testnet/tx/fcb5d00a5dc4af8d17c3e34f9294257de169ee9db9ed84eeaa8e6364e86c3105).
+  4. Outcome Protection (Blurry Receipt): Low confidence detected -> `not_charged`, ₱0.00 deducted, escrow balance untouched.
+  5. Cap Protection (Pro Route): ₱15.00 exceeded ₱10.00 policy cap -> declined locally (`over_max_price`), 0 gas spent.
+  6. Human In-The-Loop Approval & Settlement: ₱8.00 exceeded ₱5.00 auto-approve -> generated real approval ticket `cmw4rz4yy000eigtn2eys0z54`, buyer approved via `/api/approvals/[id]/resolve`, settled on Stellar testnet: [Tx `44f3c9cd...`](https://stellar.expert/explorer/testnet/tx/44f3c9cdaf4ace58092146b09d05022e6b42e1849f445f2661ac8fb06e5e6d95).
+  7. Provider Claim: Resibo claimed accrued earnings to merchant wallet (claim `cmw4s22fr...` queued).
+- **Prisma Interactive Cloud Timeouts Patched:** Resolved cloud database roundtrip timeouts (`P2028: Unable to start a transaction in the given time`) in `apps/web/lib/server/db.ts` with default `{ maxWait: 20_000, timeout: 30_000 }`.
+- **Quality Gates Passing:**
+  - `npm test -w @settl/stellar`: 4/4 files, 60/60 tests passing.
+  - `npm test -w web`: 40/40 files, 544/544 tests passing.
+  - `npm run typecheck`: 0 errors across all 7 workspaces.
+  - `npm run lint -w web`: 0 errors.
+  - `npm run build -w web`: 25/25 routes built cleanly.
+
+**Previous checkpoint, Nov 6 (Gemini report):** Real RBAC, multi-account workspace management, and Neon DB connectivity complete and verified green:
+- `npm test`: 682/682 tests passing across all 7 workspaces (`web` 514, `stellar` 52, `sdk` 49, `resibo` 28, `agent` 22, `core` 10, `verifier` 7).
 - `npm run typecheck`: 0 errors across all 7 workspaces.
 - `npm run lint`: 0 errors, 0 warnings.
 - `npm run build`: Next.js 16 + Turbopack + Prisma 7 production build compiled with 0 errors (all 25 static and dynamic routes).
-- `prisma db push`: Neon Postgres synchronized with new agent balance and lifecycle recovery columns.
-- `prisma db seed`: Demo seed populated cleanly.
+- Connection & Dashboard Fix: Resolved WSL2 Node 24 dual-stack IPv6 socket timeouts to Neon Postgres by enforcing IPv4 family selection in `apps/web/lib/server/db.ts` (`net.setDefaultAutoSelectFamily(false)`, `dns.setDefaultResultOrder('ipv4first')`). "Live dashboard unavailable" eliminated; live dashboard, agent creation form, and provider endpoint forms load instantly.
+- Multi-Account Support: Dynamic session resolution (`resolveSession`, `findWorkspaceAccount`) supporting 4 pre-configured demo workspaces (ResiboAI, GeoPH, Juan's Accounting, Acme AI Corp) and dynamic database orgs.
+- Real RBAC: `requireBuyerOrg` and `requireProviderOrg` dynamically query the database for the session's organization and enforce role boundaries.
+- Cross-role navigation: `proxy.ts` strictly redirects cross-role requests (e.g. buyers navigating to `/provider` redirected to `/buyer`).
+- Endpoint creation: `AddRouteForm` uses valid local origins (`http://localhost:3001/parse-receipt`) and clear inline allowed-origin guidance.
+- Neon DB seeded with all 4 accounts (`org_resibo`, `org_geoph`, `org_juan`, `org_acme`).
 
 **Phases 9 and 10 accepted:**
 - Buyer-owned `POST /api/agents/[id]/topup` creates an XLM Velo checkout and returns its real payment-intent ID as `sessionId`. A local pending operation and stable checkout idempotency key exist before the remote request. Raw-body signed `/api/velo/webhook` events are deduplicated by delivery ID, matched to stored intent/amount/receiver, and the paid intent is independently retrieved before funding. Unknown checkout creation remains pending for operator reconciliation; do not create a replacement blindly.

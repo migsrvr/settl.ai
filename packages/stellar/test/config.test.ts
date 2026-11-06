@@ -32,4 +32,24 @@ describe("testnet configuration and accounts", () => {
   it("reports faucet errors instead of declaring an account funded", async () => {
     await expect(fundTestnetAccount(Keypair.random().publicKey(), vi.fn().mockResolvedValue(new Response("no", { status: 429 })))).rejects.toThrow(/429/);
   });
+  it.each([
+    'account already funded to starting balance',
+    '{"detail":"op_already_exists"}',
+    'ACCOUNT ALREADY FUNDED',
+  ])("accepts an already-funded Friendbot 400 response: %s", async (body) => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(body, { status: 400 }));
+    await expect(fundTestnetAccount(Keypair.random().publicKey(), fetcher)).resolves.toBeUndefined();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    [400, 'invalid account'], [403, 'account already funded'],
+    [429, 'op_already_exists'], [500, 'account already funded'],
+  ])("does not swallow unrelated Friendbot failures (%s)", async (status, body) => {
+    await expect(fundTestnetAccount(Keypair.random().publicKey(), vi.fn().mockResolvedValue(new Response(body, { status })))).rejects.toThrow(`(${status})`);
+  });
+  it("does not expose an unreadable Friendbot error body", async () => {
+    const response = new Response('', { status: 400 });
+    vi.spyOn(response, 'text').mockRejectedValue(new Error('private upstream details'));
+    await expect(fundTestnetAccount(Keypair.random().publicKey(), vi.fn().mockResolvedValue(response))).rejects.toThrow('Friendbot failed (400)');
+  });
 });

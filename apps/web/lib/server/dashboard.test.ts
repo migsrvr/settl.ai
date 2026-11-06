@@ -29,4 +29,41 @@ describe('live dashboard ownership and safe DTOs', () => {
     mocks.payments.mockResolvedValue([{ id: 'call', status: 'not_charged', submittedAt: new Date('2026-11-06T00:00:00Z'), confirmedAt: null, txHash: null, quote: { amount: 10n, agentId: 'agent', agent: { name: 'Agent', org: { name: 'Customer' } }, endpoint: { route: '/ocr', provider: { displayName: 'Resibo' } }, verification: { result: 'fail', reasons: [{ check: 'confidence', ok: false, note: 'Too low' }] } } }]);
     const data = await loadProviderDashboard(); expect(data?.pending.amountStroops).toBe('42'); expect(mocks.pending).toHaveBeenCalledWith('GMERCHANT'); expect(mocks.payments).toHaveBeenCalledWith(expect.objectContaining({ where: { quote: { endpoint: { provider: { orgId: 'mara' } } } } })); expect(data?.calls[0]).toMatchObject({ amountStroops: '0', quotedStroops: '10', verification: 'fail', checks: [{ check: 'confidence', ok: false, note: 'Too low' }] }); expect(() => JSON.stringify(data)).not.toThrow();
   });
+  it('loads Acme independently of Juan and scopes its agents, payments and approvals', async () => {
+    mocks.cookie = 'acme@example.com';
+    mocks.org.mockResolvedValue({ id: 'org_acme', role: 'buyer', name: 'Acme AI Corp', walletPublic: 'GACME' });
+    expect(await loadBuyerDashboard()).toMatchObject({ orgName: 'Acme AI Corp', agents: [] });
+    expect(mocks.org).toHaveBeenCalledWith(expect.objectContaining({ where: { email: 'acme@example.com' } }));
+    expect(mocks.agents).toHaveBeenCalledWith(expect.objectContaining({ where: { orgId: 'org_acme' } }));
+    expect(mocks.payments).toHaveBeenCalledWith(expect.objectContaining({ where: { quote: { agent: { orgId: 'org_acme' } } } }));
+    expect(mocks.approvals).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ agent: { orgId: 'org_acme' } }) }));
+  });
+  it('loads GeoPH independently of ResiboAI and scopes provider records and activity', async () => {
+    mocks.cookie = 'geoph@example.com';
+    mocks.org.mockResolvedValue({ id: 'org_geoph', role: 'provider', name: 'GeoPH', walletPublic: 'GGEOPH' });
+    mocks.provider.mockResolvedValue({ id: 'geoph', displayName: 'GeoPH', merchantWallet: 'GGEOPH', endpoints: [], claims: [], settings: null });
+    mocks.pending.mockResolvedValue(0n);
+    expect(await loadProviderDashboard()).toMatchObject({ orgName: 'GeoPH', id: 'geoph' });
+    expect(mocks.org).toHaveBeenCalledWith(expect.objectContaining({ where: { email: 'geoph@example.com' } }));
+    expect(mocks.provider).toHaveBeenCalledWith(expect.objectContaining({ where: { orgId: 'org_geoph' } }));
+    expect(mocks.payments).toHaveBeenCalledWith(expect.objectContaining({ where: { quote: { endpoint: { provider: { orgId: 'org_geoph' } } } } }));
+    expect(mocks.pending).toHaveBeenCalledWith('GGEOPH');
+  });
+  it('rejects cross-role email sessions before reading organization data', async () => {
+    mocks.cookie = 'geoph@example.com';
+    expect(await loadBuyerDashboard()).toBeNull();
+    mocks.cookie = 'acme@example.com';
+    expect(await loadProviderDashboard()).toBeNull();
+    expect(mocks.org).not.toHaveBeenCalled();
+  });
+  it('uses custom session identity but verifies the database role before loading records', async () => {
+    mocks.cookie = 'buyer:custom@example.com';
+    mocks.org.mockResolvedValue({ id: 'org_custom', role: 'provider' });
+    expect(await loadBuyerDashboard()).toBeNull();
+    expect(mocks.agents).not.toHaveBeenCalled();
+    expect(mocks.org).toHaveBeenCalledWith(expect.objectContaining({ where: { email: 'custom@example.com' } }));
+    mocks.org.mockResolvedValue({ id: 'org_custom', role: 'buyer', name: 'Custom', walletPublic: 'GCUSTOM' });
+    expect(await loadBuyerDashboard()).toMatchObject({ orgName: 'Custom' });
+    expect(mocks.agents).toHaveBeenCalledWith(expect.objectContaining({ where: { orgId: 'org_custom' } }));
+  });
 });

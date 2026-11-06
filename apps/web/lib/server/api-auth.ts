@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { getDb } from "./db";
-import { accountFor, SESSION_COOKIE } from "../auth";
+import { resolveSession, SESSION_COOKIE } from "../auth";
 import type { Role } from "../auth";
 
 export class ApiError extends Error {
@@ -54,13 +54,14 @@ export async function requireProviderOrg(request: Request): Promise<{ orgId: str
   return requireWorkspaceOrg(request, "provider");
 }
 async function requireWorkspaceOrg(request: Request, role: Role): Promise<{ orgId: string }> {
-  const roles = (request.headers.get("cookie") ?? "").split(";").map((value) => value.trim())
+  const values = (request.headers.get("cookie") ?? "").split(";").map((value) => value.trim())
     .filter((value) => value.startsWith(`${SESSION_COOKIE}=`)).map((value) => value.slice(SESSION_COOKIE.length + 1));
-  if (roles.length !== 1 || roles[0] !== role) throw new ApiError(401, `${role}_auth_required`);
+  const session = values.length === 1 ? resolveSession(values[0]) : null;
+  if (!session || session.role !== role) throw new ApiError(401, `${role}_auth_required`);
   const origin = request.headers.get("origin");
   if (origin !== null && origin !== new URL(request.url).origin || request.headers.get("sec-fetch-site") === "cross-site") throw new ApiError(403, `${role}_origin_forbidden`);
-  const org = await getDb().org.findUnique({ where: { email: accountFor(role).email }, select: { id: true, role: true } });
-  if (!org || org.role !== role) throw new ApiError(403, `${role}_org_unavailable`);
+  const org = await getDb().org.findUnique({ where: { email: session.email }, select: { id: true, role: true } });
+  if (!org || org.role !== role) throw new ApiError(401, `${role}_auth_required`);
   return { orgId: org.id };
 }
 

@@ -8,11 +8,11 @@ import { Button, Spinner } from "@/components/ui";
 
 const PREVIEW: Record<Role, { title: string; points: string[] }> = {
   provider: {
-    title: "ResiboAI’s dashboard",
+    title: "provider dashboard",
     points: ["Live calls from AI agents and what each one paid", "Earnings waiting in escrow, claimed in one step", "Routes, prices and the checks a result must pass"],
   },
   buyer: {
-    title: "Juan’s Accounting console",
+    title: "buyer console",
     points: ["Each agent’s prepaid budget and limits", "What agents paid for, and what they didn’t", "Approvals for spends above your limit"],
   },
 };
@@ -95,7 +95,7 @@ export function LoginForm() {
             className="min-h-10 rounded-md border border-edge bg-surface px-3 text-base"
           />
           <span id="email-help" className={`min-h-[1lh] text-xs ${emailError ? "text-blocked" : "text-muted"}`}>
-            {emailError ?? "mara@example.com or juan@example.com"}
+            {emailError ?? "Choose a workspace above, or enter an existing demo organization’s email."}
           </span>
         </div>
 
@@ -135,7 +135,7 @@ export function LoginForm() {
 
       <section aria-labelledby="preview-title" className="flex flex-col gap-4 self-start rounded-xl border border-rule bg-surface p-6">
         <h2 id="preview-title" className="text-lg font-medium">
-          You’ll see {preview.title}
+          You’ll see {picked ? `${picked.org}’s ${preview.title}` : "your workspace"}
         </h2>
         <ul className="flex flex-col">
           {preview.points.map((p) => (

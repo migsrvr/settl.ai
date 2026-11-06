@@ -25,7 +25,7 @@ describe("resolveDemoAccount", () => {
   });
 
   it("sends each role to its own home", () => {
-    expect(DEMO_ACCOUNTS.map((a) => a.home)).toEqual(["/provider", "/buyer"]);
+    expect(DEMO_ACCOUNTS.map((a) => a.home)).toEqual(["/provider", "/provider", "/buyer", "/buyer"]);
   });
 });
 

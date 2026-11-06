@@ -17,5 +17,39 @@ export function AddRouteForm({ rateCents }: { rateCents: string | null }) {
     try { if (!name.trim()) throw new Error('Enter a route name.'); if (!/^\/\S*$/.test(route.trim())) throw new Error('Use a path beginning with /, like /translate.'); const providerUrl = checkoutUrl(url.trim()); const priceStroops = phpToExactStroops(price, rateCents); if (BigInt(priceStroops) <= 0n) throw new Error('Enter a price above zero.'); body = { name: name.trim(), method: 'POST', route: route.trim(), url: providerUrl, priceStroops, mode, ...(mode === 'outcome' ? { criteriaId: 'receipt_v1' } : {}) }; } catch (err) { setError(err instanceof Error ? err.message : 'Check the form.'); return; }
     setBusy(true); try { const response = await fetch('/api/provider/endpoints', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) { setError(typeof data.error === 'string' ? data.error : 'Route could not be saved. Check the fields and try again.'); return; } if (typeof data.endpointId !== 'string') throw new Error(); setSaved(true); setName(''); setRoute(''); setUrl(''); setPrice(''); router.refresh(); } catch { setUncertain(true); setError('The save result is unavailable. Reload and check your priced routes before submitting again.'); router.refresh(); } finally { setBusy(false); }
   }
-  return <form onSubmit={submit} aria-labelledby="new-route-title" className="flex min-w-0 flex-[1_1_300px] flex-col gap-4 rounded-xl border border-rule bg-surface p-6"><h2 id="new-route-title" className="text-lg font-medium">Price a new route</h2><fieldset disabled={busy || uncertain} className="flex flex-col gap-4">{[{ id: 'name', label: 'Route name', value: name, change: setName, placeholder: 'Receipt reading' }, { id: 'path', label: 'Route path', value: route, change: setRoute, placeholder: '/parse-receipt' }, { id: 'url', label: 'Provider URL', value: url, change: setUrl, placeholder: 'https://api.example.com/parse-receipt' }, { id: 'price', label: 'Price per call, PHP', value: price, change: setPrice, placeholder: '2.00' }].map(f => <div key={f.id} className="flex flex-col gap-2"><label htmlFor={`route-${f.id}`} className="font-medium">{f.label}</label><input id={`route-${f.id}`} required value={f.value} onChange={e => f.change(e.target.value)} inputMode={f.id === 'price' ? 'decimal' : undefined} type={f.id === 'url' ? 'url' : 'text'} placeholder={f.placeholder} className={field}/></div>)}<p>Routes use POST. Set the full URL of your JSON handler.</p><fieldset className="flex flex-col gap-3"><legend className="mb-2 font-medium">When agents pay</legend>{[{ id: 'outcome' as const, label: 'Only on a passing result' }, { id: 'per_call' as const, label: 'On every call' }].map(m => <label key={m.id} className="flex min-h-10 items-center gap-3"><input type="radio" name="payment-mode" checked={mode === m.id} onChange={() => setMode(m.id)} className="size-4 accent-ink"/>{m.label}</label>)}</fieldset>{mode === 'outcome' && <p>Uses the Receipt v1 verification checks.</p>}<Button type="submit" variant="primary" disabled={busy || uncertain || !rateCents}>{busy ? 'Saving route…' : 'Add route'}</Button></fieldset>{error && <p role="alert" className="text-blocked">{error}</p>}{saved && <p role="status">Route saved. New quotes use its stored settings.</p>}{!rateCents && <p role="alert">The PHP exchange rate is unavailable. Check server configuration.</p>}</form>;
+  return (
+    <form onSubmit={submit} aria-labelledby="new-route-title" className="flex min-w-0 flex-[1_1_300px] flex-col gap-4 rounded-xl border border-rule bg-surface p-6">
+      <h2 id="new-route-title" className="text-lg font-medium">Price a new route</h2>
+      <fieldset disabled={busy || uncertain} className="flex flex-col gap-4">
+        {[
+          { id: 'name', label: 'Route name', value: name, change: setName, placeholder: 'Receipt reading' },
+          { id: 'path', label: 'Route path', value: route, change: setRoute, placeholder: '/parse-receipt' },
+          { id: 'url', label: 'Provider URL', value: url, change: setUrl, placeholder: 'http://localhost:3001/parse-receipt' },
+          { id: 'price', label: 'Price per call, PHP', value: price, change: setPrice, placeholder: '2.00' },
+        ].map(f => (
+          <div key={f.id} className="flex flex-col gap-2">
+            <label htmlFor={`route-${f.id}`} className="font-medium">{f.label}</label>
+            <input id={`route-${f.id}`} required value={f.value} onChange={e => f.change(e.target.value)} inputMode={f.id === 'price' ? 'decimal' : undefined} type={f.id === 'url' ? 'url' : 'text'} placeholder={f.placeholder} aria-describedby={f.id === 'url' ? 'route-url-help' : undefined} className={field}/>
+          </div>
+        ))}
+        <p id="route-url-help">Routes use POST. Set the full URL of your JSON handler. Its origin must match a configured provider origin, such as http://localhost:3001 for the local demo. Ask the operator to configure other origins.</p>
+        <fieldset className="flex flex-col gap-3">
+          <legend className="mb-2 font-medium">When agents pay</legend>
+          {[
+            { id: 'outcome' as const, label: 'Only on a passing result' },
+            { id: 'per_call' as const, label: 'On every call' },
+          ].map(m => (
+            <label key={m.id} className="flex min-h-10 items-center gap-3">
+              <input type="radio" name="payment-mode" checked={mode === m.id} onChange={() => setMode(m.id)} className="size-4 accent-ink"/>{m.label}
+            </label>
+          ))}
+        </fieldset>
+        {mode === 'outcome' && <p>Uses the Receipt v1 verification checks.</p>}
+        <Button type="submit" variant="primary" disabled={busy || uncertain || !rateCents}>{busy ? 'Saving route…' : 'Add route'}</Button>
+      </fieldset>
+      {error && <p role="alert" className="text-blocked">{error}</p>}
+      {saved && <p role="status">Route saved. New quotes use its stored settings.</p>}
+      {!rateCents && <p role="alert">The PHP exchange rate is unavailable. Check server configuration.</p>}
+    </form>
+  );
 }

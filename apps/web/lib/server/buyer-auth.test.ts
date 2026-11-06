@@ -27,12 +27,39 @@ describe("demo buyer authorization", () => {
     await expect(requireBuyerOrg(request("settl_demo=buyer", { origin: "https://attacker.test" }))).rejects.toMatchObject({ status: 403 });
     await expect(requireBuyerOrg(request("settl_demo=buyer", { "sec-fetch-site": "cross-site" }))).rejects.toMatchObject({ status: 403 });
     org.mockResolvedValue(null);
-    await expect(requireBuyerOrg(request())).rejects.toMatchObject({ status: 403 });
+    await expect(requireBuyerOrg(request())).rejects.toMatchObject({ status: 401, code: "buyer_auth_required" });
   });
   it("gives buyer sign-in guidance without a bearer challenge", async () => {
     const error = await requireBuyerOrg(request("")).catch((e: unknown) => e);
     const response = apiErrorResponse(error);
     expect(response.headers.has("www-authenticate")).toBe(false);
     expect(await response.json()).toMatchObject({ error: "buyer_auth_required", message: "Sign in to the buyer workspace to continue." });
+  });
+  it.each([
+    ["geoph@example.com", "geoph@example.com", "provider", "org_geoph"],
+    ["geoph%40example.com", "geoph@example.com", "provider", "org_geoph"],
+    ["provider:geoph@example.com", "geoph@example.com", "provider", "org_geoph"],
+    ["acme@example.com", "acme@example.com", "buyer", "org_acme"],
+    ["buyer%3Acustom%40example.com", "custom@example.com", "buyer", "org_custom"],
+    ["provider:custom@example.com", "custom@example.com", "provider", "org_custom"],
+  ])("resolves session %s to its own stored organization", async (cookie, email, role, id) => {
+    org.mockResolvedValue({ id, role });
+    const authorize = role === "buyer" ? requireBuyerOrg : requireProviderOrg;
+    expect(await authorize(request(`settl_demo=${cookie}`))).toEqual({ orgId: id });
+    expect(org).toHaveBeenCalledWith({ where: { email }, select: { id: true, role: true } });
+  });
+  it.each(["settl_demo=geoph@example.com", "settl_demo=provider:juan@example.com", "settl_demo=acme@example.com; settl_demo=buyer", "settl_demo=%ZZ"])("rejects invalid or cross-role sessions before loading org data: %s", async (cookie) => {
+    await expect(requireBuyerOrg(request(cookie))).rejects.toMatchObject({ status: 401, code: "buyer_auth_required" });
+    expect(org).not.toHaveBeenCalled();
+  });
+  it("trusts the stored role over a custom session's role hint", async () => {
+    org.mockResolvedValue({ id: "org_custom", role: "provider" });
+    await expect(requireBuyerOrg(request("settl_demo=buyer:custom@example.com"))).rejects.toMatchObject({ status: 401, code: "buyer_auth_required" });
+    org.mockResolvedValue({ id: "org_custom", role: "buyer" });
+    await expect(requireProviderOrg(request("settl_demo=provider:custom@example.com"))).rejects.toMatchObject({ status: 401, code: "provider_auth_required" });
+  });
+  it("keeps origin protection for account-specific sessions", async () => {
+    await expect(requireBuyerOrg(request("settl_demo=acme@example.com", { origin: "https://attacker.test" }))).rejects.toMatchObject({ status: 403, code: "buyer_origin_forbidden" });
+    expect(org).not.toHaveBeenCalled();
   });
 });

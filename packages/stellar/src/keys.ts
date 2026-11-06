@@ -11,5 +11,10 @@ export async function fundTestnetAccount(publicKey: string, fetcher: typeof fetc
   const url = new URL("https://friendbot.stellar.org/");
   url.searchParams.set("addr", publicKey);
   const response = await fetcher(url, { signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(`Friendbot failed (${response.status}); retry account setup`);
+  if (response.ok) return;
+  if (response.status === 400) {
+    const message = await response.text().catch(() => "");
+    if (/account already funded|op_already_exists/i.test(message)) return;
+  }
+  throw new Error(`Friendbot failed (${response.status}); retry account setup`);
 }

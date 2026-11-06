@@ -1,7 +1,10 @@
 import Link from "next/link";
-import type { ReactNode } from "react";
-import { signOut } from "@/app/login/actions";
-import { accountFor, type Role } from "@/lib/auth";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { Suspense, type ReactNode } from "react";
+import { signOut, switchWorkspace } from "@/app/login/actions";
+import { DEMO_ACCOUNTS, resolveSession, SESSION_COOKIE, type DemoAccount, type Role } from "@/lib/auth";
+import { findWorkspaceAccount } from "@/lib/server/workspace-accounts";
 import { Logo, Pill } from "@/components/ui";
 
 type NavItem = { href: string; label: string; badge?: string };
@@ -19,35 +22,33 @@ const NAV: Record<Role, NavItem[]> = {
   ],
 };
 
-const OTHER: Record<Role, NavItem[]> = {
-  provider: [
-    { href: "/buyer", label: "Buyer console" },
-    { href: "/stage", label: "Stage view" },
-  ],
-  buyer: [
-    { href: "/provider", label: "Provider dashboard" },
-    { href: "/stage", label: "Stage view" },
-  ],
-};
-
 function navClass(active: boolean) {
   return `flex min-h-10 items-center justify-between rounded-md px-3 no-underline ${
     active ? "bg-saffron-well font-medium text-ink" : "text-ink-2 hover:bg-well"
   }`;
 }
 
-export function AppShell({
-  role,
-  active,
-  crumbs,
-  children,
-}: {
+type AppShellProps = {
   role: Role;
   active: string;
   crumbs?: { href?: string; label: string }[];
   children: ReactNode;
-}) {
-  const account = accountFor(role);
+};
+
+export function AppShell(props: AppShellProps) {
+  // Request-time identity stays under Suspense with Next.js 16 Cache Components.
+  return <Suspense fallback={<p role="status" className="p-10 text-ink-2">Loading workspace…</p>}><WorkspaceShell {...props} /></Suspense>;
+}
+
+async function WorkspaceShell({ role, active, crumbs, children }: AppShellProps) {
+  const session = resolveSession((await cookies()).get(SESSION_COOKIE)?.value);
+  if (!session) redirect("/login");
+  if (session.role !== role) redirect(`/${session.role}`);
+  let workspace: DemoAccount | null;
+  try { workspace = await findWorkspaceAccount(session.email); }
+  catch { return <p role="alert" className="p-10 text-ink-2">Workspace is unavailable. Reload the page or sign in again.</p>; }
+  const account = workspace;
+  if (!account || account.role !== role) redirect("/login");
   const searchHint = role === "provider" ? "Search calls, agents or transaction hashes" : "Search agents, providers or transaction hashes";
 
   return (
@@ -77,14 +78,18 @@ export function AppShell({
             ))}
           </nav>
 
-          <div className="flex flex-col gap-0.5">
-            <span className="px-3 pb-1 text-xs text-muted">Other views</span>
-            {OTHER[role].map((item) => (
-              <Link key={item.href} href={item.href} className={navClass(false)}>
-                {item.label}
-              </Link>
+          <nav aria-label="Switch workspace" className="flex flex-col gap-0.5">
+            <span className="px-3 pb-1 text-xs text-muted">Switch workspace</span>
+            {DEMO_ACCOUNTS.filter((workspace) => workspace.email !== account.email).map((workspace) => (
+              <form key={workspace.email} action={switchWorkspace.bind(null, workspace.email)}>
+                <button type="submit" className={`press w-full gap-2 text-left ${navClass(false)}`}>
+                  <span>{workspace.org}</span>
+                  <span className="rounded bg-well px-2 py-0.5 text-xs text-muted">{workspace.role === "provider" ? "Provider" : "Buyer"}</span>
+                </button>
+              </form>
             ))}
-          </div>
+            <Link href="/stage" className={navClass(false)}>Stage view</Link>
+          </nav>
 
           <div className="mt-auto flex flex-col gap-2">
             <form action={signOut}>

@@ -36,6 +36,10 @@ export async function seedDemo(db: PrismaClient, { phpPerXlm, apiKey }: SeedOpti
       where: { id: "org_juan" }, update: {},
       create: { id: "org_juan", name: "Juan's Accounting Firm", contactName: "Juan", email: "juan@example.com", role: "buyer", ...wallet() },
     });
+    await tx.org.upsert({
+      where: { id: "org_acme" }, update: {},
+      create: { id: "org_acme", name: "Acme AI Corp", contactName: "Carlos Mendez", email: "acme@example.com", role: "buyer", ...wallet() },
+    });
     const geoph = await tx.org.upsert({
       where: { id: "org_geoph" }, update: {},
       create: { id: "org_geoph", name: "GeoPH", contactName: "GeoPH demo", email: "geoph@example.com", role: "provider", ...wallet() },
@@ -55,11 +59,13 @@ export async function seedDemo(db: PrismaClient, { phpPerXlm, apiKey }: SeedOpti
       minConfidence: 0.85, lineItemsSumToTotal: { tolerance: 0.01 },
     };
     for (const endpoint of [
-      { id: "resibo_parse", providerId: "resibo", name: "Receipt OCR", route: "/parse-receipt", price: amount(2), mode: "outcome" as const, criteriaId: "resibo.receipt.v1", criteria },
-      { id: "resibo_pro", providerId: "resibo", name: "Receipt OCR Pro", route: "/parse-receipt-pro", price: amount(15), mode: "per_call" as const },
-      { id: "geoph_lookup", providerId: "geoph", name: "GeoPH lookup", route: "/lookup", price: amount(8), mode: "per_call" as const },
+      { id: "resibo_parse", providerId: "resibo", name: "Receipt OCR", route: "/parse-receipt", url: "http://localhost:3001/parse-receipt", price: amount(2), mode: "outcome" as const, criteriaId: "resibo.receipt.v1", criteria },
+      { id: "resibo_pro", providerId: "resibo", name: "Receipt OCR Pro", route: "/parse-receipt-pro", url: "http://localhost:3001/parse-receipt-pro", price: amount(15), mode: "per_call" as const },
+      { id: "geoph_lookup", providerId: "geoph", name: "GeoPH lookup", route: "/lookup", url: "http://localhost:3001/lookup", price: amount(8), mode: "per_call" as const },
     ]) {
       await tx.endpoint.upsert({ where: { id: endpoint.id }, update: {}, create: endpoint });
+      // Repair old demo seeds without replacing an intentionally configured origin.
+      await tx.endpoint.updateMany({ where: { id: endpoint.id, url: null }, data: { url: endpoint.url } });
     }
     const agentKeypair = Keypair.random();
     await tx.agent.upsert({
@@ -89,7 +95,7 @@ export async function seedDemo(db: PrismaClient, { phpPerXlm, apiKey }: SeedOpti
       create: { agentId: "bookkeeper", name: "Bookkeeper demo", keyHash },
     });
     if (storedKey.agentId !== "bookkeeper") throw new Error("Demo API key is already assigned to a different agent");
-  }, { timeout: 30_000 });
+  }, { maxWait: 20_000, timeout: 30_000 });
 }
 
 async function main() {

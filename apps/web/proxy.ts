@@ -1,11 +1,18 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { SESSION_COOKIE } from "@/lib/auth";
+import { resolveSession, SESSION_COOKIE } from "@/lib/auth";
 
-// Optimistic demo check only: the cookie holds a role, not a real session.
+// Optimistic demo routing only; protected data access verifies the stored org role.
 export function proxy(request: NextRequest) {
-  const role = request.cookies.get(SESSION_COOKIE)?.value;
-  if (role === "provider" || role === "buyer") return NextResponse.next();
+  const session = resolveSession(request.cookies.get(SESSION_COOKIE)?.value);
+  if (session) {
+    const pathname = request.nextUrl.pathname;
+    const buyerRoute = pathname === "/buyer" || pathname.startsWith("/buyer/");
+    const providerRoute = pathname === "/provider" || pathname.startsWith("/provider/");
+    if (buyerRoute && session.role !== "buyer") return NextResponse.redirect(new URL("/provider", request.url));
+    if (providerRoute && session.role !== "provider") return NextResponse.redirect(new URL("/buyer", request.url));
+    return NextResponse.next();
+  }
 
   const login = new URL("/login", request.url);
   login.searchParams.set("next", request.nextUrl.pathname);
