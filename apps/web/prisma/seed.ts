@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { PrismaClient } from "../lib/generated/prisma/client";
 import { getDb } from "../lib/server/db";
 import { encryptWalletSecret } from "../lib/server/wallets";
+import { applyDemoUsageBilling } from "./demo-usage-billing";
 
 export interface SeedOptions {
   phpPerXlm: number;
@@ -54,12 +55,8 @@ export async function seedDemo(db: PrismaClient, { phpPerXlm, apiKey }: SeedOpti
         create: { providerId: provider.id, autoClaimEnabled: true, autoClaimThreshold: amount(50) },
       });
     }
-    const criteria = {
-      schema: "resibo.receipt.v1", required: ["merchant_name", "date", "total", "line_items"],
-      minConfidence: 0.85, lineItemsSumToTotal: { tolerance: 0.01 },
-    };
     for (const endpoint of [
-      { id: "resibo_parse", providerId: "resibo", name: "Receipt OCR", route: "/parse-receipt", url: "http://localhost:3001/parse-receipt", price: amount(2), mode: "outcome" as const, criteriaId: "resibo.receipt.v1", criteria },
+      { id: "resibo_parse", providerId: "resibo", name: "Receipt OCR", route: "/parse-receipt", url: "http://localhost:3001/parse-receipt", price: amount(2), mode: "per_call" as const },
       { id: "resibo_pro", providerId: "resibo", name: "Receipt OCR Pro", route: "/parse-receipt-pro", url: "http://localhost:3001/parse-receipt-pro", price: amount(15), mode: "per_call" as const },
       { id: "geoph_lookup", providerId: "geoph", name: "GeoPH lookup", route: "/lookup", url: "http://localhost:3001/lookup", price: amount(8), mode: "per_call" as const },
     ]) {
@@ -67,6 +64,7 @@ export async function seedDemo(db: PrismaClient, { phpPerXlm, apiKey }: SeedOpti
       // Repair old demo seeds without replacing an intentionally configured origin.
       await tx.endpoint.updateMany({ where: { id: endpoint.id, url: null }, data: { url: endpoint.url } });
     }
+    await applyDemoUsageBilling(tx);
     const agentKeypair = Keypair.random();
     await tx.agent.upsert({
       where: { id: "bookkeeper" }, update: {},

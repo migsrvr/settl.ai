@@ -1,4 +1,5 @@
 import { cookies } from 'next/headers';
+import { connection } from 'next/server';
 import { CheckResultSchema } from '@settl/core';
 import { createStellarClient, loadStellarConfig } from '@settl/stellar';
 import { resolveSession, SESSION_COOKIE, type Role } from '../auth';
@@ -35,6 +36,7 @@ async function chainBalance(read: () => Promise<bigint>, cached?: { cachedBalanc
 }
 export async function loadProviderDashboard() {
   // Keep request-time APIs outside the data-error boundary so Next can suspend prerendering.
+  await connection();
   const session = resolveSession((await cookies()).get(SESSION_COOKIE)?.value);
   if (!session || session.role !== 'provider') return null;
   try {
@@ -53,6 +55,9 @@ export async function loadProviderDashboard() {
   }
 }
 export async function loadBuyerDashboard() {
+  // Live balances and expiry checks must wait for the actual request, not prerendering.
+  // Keep this outside try/catch so Next's prerender interruption can propagate.
+  await connection();
   const session = resolveSession((await cookies()).get(SESSION_COOKIE)?.value);
   if (!session || session.role !== 'buyer') return null;
   try {

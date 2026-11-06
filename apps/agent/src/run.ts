@@ -55,7 +55,7 @@ const mission = `You are Juan's autonomous bookkeeping agent. Use the registered
 1. Read settl_get_budget and inspect the policy and available balance.
 2. Discover the real service prices with settl_list_services.
 3. Decide to request resibo_parse with input {"fixture":"clean"} and maxPricePhp "10.00". A paid valid receipt is recorded by the runtime.
-4. Request resibo_parse with input {"fixture":"blurry"}, maxPricePhp "10.00". Explain the not_charged result; never create an expense from it.
+4. Request resibo_parse with input {"fixture":"blurry"}, maxPricePhp "10.00". Report the actual charge using the service's discovered billing mode. Per-call services charge for usage even when the mock output is blurry; only outcome services can release a failed result without charge. Never create a business expense from low-confidence receipt data.
 5. Request resibo_pro once with maxPricePhp "10.00" to demonstrate its PHP15 price exceeding the PHP10 cap. Honor declined over_max_price.
 6. Request geoph_lookup with input {"city":"Makati"}, maxPricePhp "10.00". It should request human approval for PHP8.
 The runtime displays the buyer approval link and polls for a bounded time. If the call returns approvalStatus approved, you must decide to invoke settl_call again with precisely the same service, input, maxPricePhp and returned approvalId. Otherwise stop that action.

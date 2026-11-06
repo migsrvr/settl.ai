@@ -33,13 +33,24 @@ AES-256-GCM and an authenticated version. Keep that key stable to read stored
 wallets. Plaintext secrets are never persisted or printed.
 
 The database-only seed creates Mara/ResiboAI, Juan's Accounting Firm with Juan's
-Bookkeeper, and GeoPH. It includes receipt OCR (₱2, outcome), Pro (₱15, per-call),
+Bookkeeper, and GeoPH. It includes receipt OCR (₱2, per-call), Pro (₱15, per-call),
 and GeoPH (₱8, per-call), a ₱10 cap, ₱50 daily budget and ₱5 approval threshold.
 Prices use `PHP_PER_XLM` (default 15) and round up to integer stroops. Allowlisted
 provider IDs are `resibo` and `geoph`. Wallets are randomly generated and
 encrypted; reruns preserve existing wallets, policy, revocations and nonce state.
 The seed never contacts Stellar, funds accounts, registers contracts, or invents
 on-chain balances. New agents remain `provisioning` until a later live setup step.
+
+### Existing mock OCR billing
+
+The November 7 decision changes `resibo_parse` to usage billing. New seeds create it as `per_call`; rerunning the seed also upgrades that original Resibo endpoint. For an existing database, use this narrower command from the repo root after selecting the intended database environment:
+
+```sh
+npm exec -w web -- tsx prisma/demo-usage-billing.ts --apply
+```
+
+Without `--apply`, the command prints guidance and never connects to the database. Applying it updates only `resibo_parse` owned by `resibo` while its mode is `outcome`, switches it to `per_call`, and clears obsolete result criteria. Reapplying is a no-op. It preserves price, provider URL, ownership, wallets, policy, outstanding reservations, and historical quote/payment terms. Old uncharged calls remain uncharged; new calls use the stored per-call setting. Pending old outcome calls must finish or be reconciled under their original terms; old approval snapshots with a different mode cannot resume as per-call payments. No chain operation is submitted by this update. On November 7, the user authorized applying this to the configured Neon database: exactly one endpoint changed, a database read confirmed preserved fields, and actual hosted MCP discovery confirmed Receipt OCR at PHP 2 in per-call mode. No purchase was made during that update. Other environments still require their own deliberate application.
+
 Because the demo row ID `bookkeeper` repeats across databases, its device hash is
 SHA-256 of `settl:agent:bookkeeper:<agentPublic>`. Including its generated wallet
 identity prevents separate demo databases from claiming the same testnet device.

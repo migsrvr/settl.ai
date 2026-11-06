@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { Velo } from "@carts1024/velo-sdk";
+import { Velo, VeloWebhookSignatureVerificationError } from "@carts1024/velo-sdk";
 import type { WebhookPaymentIntentData } from "@carts1024/velo-sdk";
+import { z } from "zod";
 import { fromStroops, toStroops } from "@settl/core";
 import { createStellarClient, loadStellarConfig } from "@settl/stellar";
 import type { NoirClient } from "@settl/stellar";
@@ -11,6 +12,36 @@ import { getDb } from "./db";
 
 const MAX_STROOPS = 9_223_372_036_854_775_807n;
 const HASH = /^[a-fA-F0-9]{64}$/;
+const compatiblePaymentEvent = z.object({
+  version: z.literal("1").default("1"), id: z.string(),
+  type: z.enum(["payment.created", "payment.succeeded", "payment.failed", "payment_access.activated", "payment.access_activated"]),
+  test: z.boolean(), sentAt: z.string(),
+  project: z.object({
+    id: z.string(), name: z.string(), slug: z.string(),
+    registryProjectId: z.union([z.string(), z.number().int().nonnegative()]).optional(),
+  }),
+  paymentIntent: z.object({
+    id: z.string(), amount: z.string(), asset: z.string(), merchantName: z.string(),
+    status: z.enum(["awaiting_route", "created", "pending", "paid", "failed", "expired", "cancelled"]),
+    createdAt: z.string(), updatedAt: z.string(), description: z.string().nullable().optional().default(null),
+    receiverAddress: z.string().optional(), payerAddress: z.string().optional(), txHash: z.string().optional(),
+  }),
+});
+
+async function verifyVeloEvent(input: Parameters<typeof Velo.webhooks.verify>[0]) {
+  try { return await Velo.webhooks.verify(input); }
+  catch (error) {
+    // Pinned alpha.4 reaches this exact schema error ONLY AFTER authenticating
+    // the untouched body and checking the timestamp. Velo's backend defines
+    // registryProjectId as an optional number, unlike the SDK's required string.
+    // Never broaden this to signature failures or normalize before verification.
+    if (!(error instanceof VeloWebhookSignatureVerificationError)
+      || error.message !== "Invalid webhook event: project fields must be strings") throw error;
+    const parsed = compatiblePaymentEvent.safeParse(JSON.parse(input.payload));
+    if (!parsed.success) throw error;
+    return parsed.data;
+  }
+}
 export interface CreateTopupInput {
   orgId: string;
   agentId: string;
@@ -51,6 +82,33 @@ function httpUrl(value: unknown): string {
 }
 function validReceiver(value: unknown): value is string {
   return typeof value === "string" && StrKey.isValidEd25519PublicKey(value);
+}
+
+/** The SDK validates both the HMAC and event shape. Never log its raw error. */
+function webhookVerificationFailure(error: unknown): { code: string; reason: string } {
+  const message = error instanceof Error ? error.message : "";
+  if (message.startsWith("Invalid webhook event: ")) {
+    const payloadReasons: Record<string, string> = {
+      "Invalid webhook event: project must be an object": "invalid_project_shape",
+      "Invalid webhook event: project fields must be strings": "invalid_project_fields",
+      "Invalid webhook event: paymentIntent must be an object": "invalid_payment_intent_shape",
+    };
+    for (const field of ["id", "amount", "asset", "merchantName", "status", "createdAt", "updatedAt"]) {
+      if (message === `Invalid webhook event: paymentIntent.${field} must be a string`) {
+        return { code: "invalid_velo_payload", reason: `invalid_payment_intent_${field}` };
+      }
+    }
+    return { code: "invalid_velo_payload", reason: payloadReasons[message] ?? "invalid_event_shape" };
+  }
+  const signatureReasons: Record<string, string> = {
+    "Missing signature header": "missing_signature",
+    "Missing webhook signing secret": "missing_signing_secret",
+    "Invalid signature header format": "invalid_signature_header",
+    "Invalid timestamp in header": "invalid_signature_timestamp",
+    "Signature timestamp expired or from the future": "signature_timestamp_outside_tolerance",
+    "Signature mismatch": "signature_mismatch",
+  };
+  return { code: "invalid_velo_signature", reason: signatureReasons[message] ?? "verification_failed" };
 }
 
 export function createVeloService(options: VeloOptions) {
@@ -114,8 +172,12 @@ export function createVeloService(options: VeloOptions) {
     if (!options.webhookSecret) throw new ApiError(503, "velo_webhook_unavailable");
     // SDK authenticates the untouched body before parsing its typed event.
     let event;
-    try { event = await Velo.webhooks.verify({ payload: input.payload, signature: input.signature, secret: options.webhookSecret }); }
-    catch { throw new ApiError(400, "invalid_velo_signature"); }
+    try { event = await verifyVeloEvent({ payload: input.payload, signature: input.signature, secret: options.webhookSecret }); }
+    catch (error) {
+      const failure = webhookVerificationFailure(error);
+      console.warn("velo_webhook_verification_failed", { reason: failure.reason });
+      throw new ApiError(400, failure.code);
+    }
     const deliveryId = input.deliveryId;
     if (!deliveryId?.trim() || deliveryId.length > 256) throw new ApiError(400, "invalid_velo_delivery");
     await db.webhookEvent.upsert({ where: deliveryKey(deliveryId), update: {}, create: {

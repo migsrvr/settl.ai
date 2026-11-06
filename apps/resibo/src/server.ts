@@ -64,6 +64,9 @@ export function createApp(options: ResiboOptions = {}) {
   };
 
   app.disable("x-powered-by");
+  app.get("/health", (_req, res) => {
+    res.json({ status: "ok", service: "settl-demo-provider" });
+  });
   app.use(express.json({ limit: "64kb" }));
 
   app.post(
@@ -94,6 +97,8 @@ export function createApp(options: ResiboOptions = {}) {
 }
 
 export const app = createApp();
+// Vercel loads this module without starting the standalone port listener.
+export default app;
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = Number(process.env.PORT ?? "3001");

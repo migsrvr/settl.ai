@@ -1,6 +1,7 @@
 import { loadEnvConfig } from "@next/env";
 import { createStellarClient, loadStellarConfig, TESTNET_XLM, type NoirClient } from "@settl/stellar";
 import { createHash } from "node:crypto";
+import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { connectMcp, mcpUrl, type McpConnection } from "../apps/agent/src/client";
@@ -78,12 +79,12 @@ export async function runLiveDemo(options: DemoOptions): Promise<void> {
     requireDemo(status !== "pending" && status !== "unknown", "Payment is pending or unknown; reconcile before continuing");
     return result;
   };
-  const paid = async (result: Row, amount: bigint, outcome = false) => {
+  const paid = async (result: Row, amount: bigint) => {
     requireDemo(result.status === "paid", "Expected a settled payment; inspect the live audit trail");
     const receipt = row(result.receipt);
     requireDemo(receipt.status === "paid" && integer(receipt.amountStroops) === amount && typeof receipt.quoteId === "string", "Paid receipt amount or identity is invalid");
     requireDemo(typeof receipt.txHash === "string" && /^[a-fA-F0-9]{64}$/.test(receipt.txHash), "Paid receipt lacks a real transaction hash");
-    requireDemo(Array.isArray(receipt.checks) && (!outcome || receipt.checks.length > 0) && receipt.checks.every((check) => row(check).ok === true), "Paid receipt verification did not pass");
+    requireDemo(Array.isArray(receipt.checks) && receipt.checks.every((check) => row(check).ok === true), "Paid receipt verification did not pass");
     requireDemo(result.data && typeof result.data === "object", "Provider returned no result");
     const evidence = await proof.readAuthorizeTx(receipt.txHash);
     requireDemo(evidence.ok && evidence.args?.amount === amount && evidence.args.asset === TESTNET_XLM, "Confirmed ledger authorization evidence does not match the receipt");
@@ -102,7 +103,7 @@ export async function runLiveDemo(options: DemoOptions): Promise<void> {
       `Live service ${id} differs from the approved demo setup`);
     return integer(value.amountStroops);
   };
-  const cleanPrice = service("resibo_parse", "resibo", "outcome", "2.00");
+  const cleanPrice = service("resibo_parse", "resibo", "per_call", "2.00");
   const proPrice = service("resibo_pro", "resibo", "per_call", "15.00");
   const geoPrice = service("geoph_lookup", "geoph", "per_call", "8.00");
   for (const item of services) output(`${text(item.id)} — PHP ${text(row(item.displayPrice).amount)} — ${text(item.mode)}`);
@@ -110,8 +111,8 @@ export async function runLiveDemo(options: DemoOptions): Promise<void> {
   await heading("Step 2 — Read live escrow and guardrails");
   let snapshot = await budget();
   const policy = row(snapshot.raw.policy);
-  requireDemo(policy.asset === TESTNET_XLM && snapshot.balance >= cleanPrice + geoPrice && snapshot.held === 0n &&
-    integer(snapshot.raw.remainingDailyBudgetStroops) >= cleanPrice + geoPrice && Number(snapshot.raw.openApprovals) === 0,
+  requireDemo(policy.asset === TESTNET_XLM && snapshot.balance >= 2n * cleanPrice + geoPrice && snapshot.held === 0n &&
+    integer(snapshot.raw.remainingDailyBudgetStroops) >= 2n * cleanPrice + geoPrice && Number(snapshot.raw.openApprovals) === 0,
     "Agent needs sufficient native-XLM escrow, daily budget, and no outstanding holds or approvals");
   requireDemo(integer(policy.autoApproveUpTo) >= cleanPrice && integer(policy.autoApproveUpTo) < geoPrice &&
     integer(policy.maxAmount) >= geoPrice && integer(policy.maxPricePerCall) >= geoPrice && integer(policy.maxPricePerCall) < proPrice &&
@@ -119,20 +120,17 @@ export async function runLiveDemo(options: DemoOptions): Promise<void> {
     Date.parse(String(policy.expiresAt)) > now(), "Agent policy does not match the clean/declined/approval demonstration");
   output(`Escrow: ${snapshot.balance} stroops (PHP ${text(snapshot.raw.balancePhp)}); daily limit: ${text(policy.dailyBudget)} stroops; automatic approval: ${text(policy.autoApproveUpTo)} stroops`);
 
-  await heading("Step 3 — Settl on Result: clean receipt");
+  await heading("Step 3 — Usage billing: clean mock receipt");
   const clean = await call(keys[0], { serviceId: "resibo_parse", input: { fixture: "clean" }, maxPricePhp: "10.00" });
-  const cleanReceipt = await paid(clean, cleanPrice, true);
-  output("Outcome verification passed; the real provider returned a clean receipt.");
+  const cleanReceipt = await paid(clean, cleanPrice);
+  output("API usage charged; the mock provider returned a clean receipt.");
   snapshot = await checkBalance(snapshot, cleanPrice);
 
-  await heading("Step 4 — Outcome protection: blurry receipt");
+  await heading("Step 4 — Usage billing: blurry mock receipt");
   const blurry = await call(keys[1], { serviceId: "resibo_parse", input: { fixture: "blurry" }, maxPricePhp: "10.00" });
-  const blurryReceipt = row(blurry.receipt);
-  requireDemo(blurry.status === "not_charged" && blurryReceipt.status === "not_charged" && integer(blurryReceipt.amountStroops) === 0n && !blurryReceipt.txHash &&
-    Array.isArray(blurryReceipt.checks) && blurryReceipt.checks.some((check) => row(check).check === "confidence" && row(check).ok === false),
-    "Blurry result did not demonstrate failed confidence verification with zero charge");
-  snapshot = await checkBalance(snapshot, 0n);
-  output("NOT CHARGED — confidence verification failed; escrow balance and daily spend unchanged.");
+  const blurryReceipt = await paid(blurry, cleanPrice);
+  snapshot = await checkBalance(snapshot, cleanPrice);
+  output("API usage charged at the same price; mock receipt quality does not determine the fee.");
 
   await heading("Step 5 — Caller price protection: PHP15 exceeds PHP10");
   const pro = await call(keys[2], { serviceId: "resibo_pro", maxPricePhp: "10.00" });
@@ -193,6 +191,10 @@ async function main() {
   const interactive = process.stdin.isTTY && process.stdout.isTTY && !process.argv.includes("--no-pause");
   const terminal = interactive ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
   try {
+    if (process.argv.includes("--reset")) {
+      await unlink(ledger.path).catch(() => {});
+      await unlink(`${ledger.path}.lock`).catch(() => {});
+    }
     unlock = await ledger.lock();
     const config = loadStellarConfig();
     connection = await connectMcp(process.env.SETTL_MCP_URL ?? "http://localhost:3000/mcp", token);
@@ -203,7 +205,11 @@ async function main() {
       sleep: (ms) => new Promise((done) => setTimeout(done, ms)), now: Date.now,
     });
   } catch (error) {
-    log("error", error instanceof DemoError ? error.message : "Demo stopped. Check configuration, provider connectivity and the recorded operations before retrying.");
+    const message = error instanceof DemoError ? error.message : error instanceof Error ? error.message : "Demo stopped. Check configuration, provider connectivity and the recorded operations before retrying.";
+    log("error", message);
+    if (!process.argv.includes("--reset") && message.includes("Demo operations already recorded")) {
+      log("info", "To start a fresh live demonstration run, pass --reset: npx tsx scripts/demo-e2e.ts --reset");
+    }
     process.exitCode = 1;
   } finally {
     terminal?.close();

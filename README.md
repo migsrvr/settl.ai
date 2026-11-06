@@ -43,6 +43,8 @@ flowchart LR
 - **Per-call:** obtain a quote, check policy, authorize payment on-chain, then call the provider with transaction proof and return the result and receipt.
 - **Settl on Result:** reserve the quoted amount off-chain, call the provider, verify the result against agreed checks, and authorize payment only on a pass. Failed checks release the reservation without a charge.
 
+The sample Receipt OCR, Pro, and GeoPH products use **per-call billing**: an allowed invocation pays the usage fee before the mock provider runs, regardless of fixture quality or a later provider error. Receipt OCR costs ₱2 and defaults to a clean sample without image input. Settl on Result remains an optional product mode. Existing seeded databases need the [scoped billing update](apps/web/prisma/README.md#existing-mock-ocr-billing) before their Receipt OCR quotes change.
+
 An authorization moves value from the device's available escrow to the provider's pending balance. The provider receives it in its wallet through a separate `claim`, manually or through the planned auto-claim automation.
 
 The demo uses native testnet XLM, displayed in pesos at a configured demo rate. Wallets are custodial for the testnet MVP. Live or production payment support is not established by the offline tests.
@@ -72,6 +74,19 @@ The six planned MCP tools are:
 | `settl_receipts` | Retrieve recent receipts. |
 
 See the [current API/MCP design](docs/superpowers/specs/2026-11-04-settl-api-mcp-design.md) for the contract and authentication model.
+
+## Live Demonstration Guide
+
+The current user-confirmed demonstration connects an external **Codex CLI** to Settl MCP after provider setup and buyer escrow funding. Follow **[Provider-to-Codex Live Demo](docs/CODEX_MCP_LIVE_DEMO.md)** for the complete steps, exact website form values, prompts, approvals, claims and Stellar evidence. The one-terminal runner below is a separate deterministic rehearsal utility.
+
+For the complete real-world walkthrough (Startup API setup, Buyer Agent on-chain policy, 1-terminal MCP execution, Settl on Result outcome verification, and Merchant claims on Stellar testnet), see:
+👉 **[`docs/LIVE_DEMO_GUIDE.md`](docs/LIVE_DEMO_GUIDE.md)**
+
+To run the entire 1-terminal live demonstration orchestrator:
+```sh
+npm run demo
+```
+*(or `npm run demo:fast` for continuous execution with automated approval)*
 
 ## Run locally
 

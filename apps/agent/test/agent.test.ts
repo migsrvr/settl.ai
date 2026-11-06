@@ -36,6 +36,7 @@ describe('bookkeeping agent', () => {
       const tools = request.tools as unknown as Record<string, { execute: (input: Record<string, unknown>) => Promise<unknown> }>;
       await tools.settl_call.execute({ serviceId: 'resibo_parse', input: { fixture: 'clean' } });
       expect(request).toMatchObject({ maxRetries: 0, toolCallConcurrency: 1 });
+      expect(request.system).toContain('Per-call services charge for usage even when the mock output is blurry');
       return {} as Awaited<ReturnType<typeof generateText>>;
     });
     await runBookkeeper(options);
@@ -43,6 +44,19 @@ describe('bookkeeping agent', () => {
     expect(mcp.callTool).toHaveBeenCalledWith('settl_call', {
       serviceId: 'resibo_parse', input: { fixture: 'clean' }, maxPricePhp: '10.00',
     });
+  });
+
+  it('records a paid blurry API call without booking its low-confidence receipt as a business expense', async () => {
+    const charged = { ...paid, receipt: { ...paid.receipt, quoteId: 'quote-blurry', checks: [] }, data: { ...data, confidence: 0.42 } };
+    const { options, mcp, messages } = await setup(() => charged);
+    await runBookkeeper({ ...options, generate: async ({ invoke }) => {
+      expect(await invoke('settl_call', { serviceId: 'resibo_parse', input: { fixture: 'blurry' } })).toEqual(charged);
+    } });
+    const ledger = new Ledger(options.ledgerPath); await ledger.load();
+    expect(ledger.operation('resibo_parse:blurry')).toMatchObject({ status: 'paid', txHash: hash });
+    expect(ledger.expenses).toEqual([]);
+    expect(messages.join('\n')).toContain('paid');
+    expect(mcp.callTool).toHaveBeenCalledTimes(1);
   });
 
   it('records only paid validated receipt data and deduplicates across restarts', async () => {

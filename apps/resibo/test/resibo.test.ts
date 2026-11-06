@@ -4,7 +4,7 @@ import { Server } from "node:http";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { receiptFixtures } from "../src/fixtures.js";
-import { createApp } from "../src/server.js";
+import hostedApp, { createApp } from "../src/server.js";
 
 const quoteId = "00000000-0000-4000-8000-000000000001";
 const reservationId = "00000000-0000-4000-8000-000000000002";
@@ -97,8 +97,15 @@ describe("Resibo provider", () => {
     vi.restoreAllMocks();
   });
 
+  it("serves a public health check from the serverless entry without payment or upstream requests", async () => {
+    const response = await request(hostedApp).get("/health");
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: "ok", service: "settl-demo-provider" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each([
-    ["/parse-receipt", "resibo_parse", "outcome"],
+    ["/parse-receipt", "resibo_parse", "per-call"],
     ["/parse-receipt-pro", "resibo_pro", "per-call"],
     ["/lookup", "geoph_lookup", "per-call"],
   ] as const)("returns a payment quote for %s without proof", async (path, endpointId, mode) => {
@@ -127,13 +134,16 @@ describe("Resibo provider", () => {
     expect(response.body).not.toHaveProperty("stack");
   });
 
-  it.each(["clean", "blurry", "wrong_total"] as const)(
-    "returns the %s fixture after a verified per-call transaction",
-    async (fixture) => {
+  it.each([
+    ["/parse-receipt", "resibo_parse"],
+    ["/parse-receipt-pro", "resibo_pro"],
+  ] as const)("bills %s per call for every mock receipt quality", async (path, endpointId) => {
+    for (const fixture of ["clean", "blurry", "wrong_total"] as const) {
+      fetchMock.mockClear();
       fetchMock.mockResolvedValue(jsonResponse({ ok: true, receipt: paidReceipt() }));
 
       const response = await request(app)
-        .post("/parse-receipt-pro")
+        .post(path)
         .set("X-PAYMENT", txProof)
         .send({ fixture });
 
@@ -146,17 +156,18 @@ describe("Resibo provider", () => {
       const [url, init] = fetchMock.mock.calls[0]!;
       expect(url).toBe(`${apiUrl}/api/payments/verify`);
       expect(JSON.parse(String(init?.body))).toEqual({
-        endpointId: "resibo_pro",
+        endpointId,
         proof: { kind: "tx", quoteId, txHash },
       });
-    },
-  );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  });
 
   it("defaults to the clean fixture when none is selected", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ ok: true, receipt: paidReceipt() }));
 
     const response = await request(app)
-      .post("/parse-receipt-pro")
+      .post("/parse-receipt")
       .set("X-PAYMENT", txProof)
       .send({});
 

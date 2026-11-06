@@ -149,6 +149,31 @@ describe("broker quotes and policy", () => {
 });
 
 describe("broker authorization and recovery", () => {
+  it.each(["clean", "blurry", "wrong_total"])("charges mock OCR usage before returning the %s fixture, without outcome checks", async (fixture) => {
+    const s = setup(); s.endpoint.url = "https://provider.example/ocr";
+    s.fetcher.mockImplementation(async (_url, init) => {
+      expect(s.chain.authorize).toHaveBeenCalledTimes(1);
+      expect(s.payments.get("q1")).toMatchObject({ status: "paid", txHash: HASH });
+      expect(decodePaymentHeader((init!.headers as Record<string, string>)["X-PAYMENT"])).toMatchObject({ kind: "tx", txHash: HASH });
+      return Response.json({ fixture, confidence: fixture === "blurry" ? 0.42 : 0.98 });
+    });
+    expect(await s.executeCall({ agentId: "bookkeeper", endpointId: "ocr", input: { fixture } })).toMatchObject({
+      status: "paid", receipt: { amountStroops: "1333334", txHash: HASH, checks: [] }, data: { fixture },
+    });
+    expect(s.evaluate).not.toHaveBeenCalled();
+    expect(s.reservations.size).toBe(0);
+  });
+
+  it("retains a confirmed usage charge when the provider rejects the request", async () => {
+    const s = setup(); s.endpoint.url = "https://provider.example/ocr";
+    s.fetcher.mockResolvedValue(Response.json({ error: "mock_rejected" }, { status: 400 }));
+    expect(await s.executeCall({ agentId: "bookkeeper", endpointId: "ocr" })).toMatchObject({
+      status: "paid", receipt: { amountStroops: "1333334", txHash: HASH }, providerError: "provider_rejected", data: null,
+    });
+    expect(s.chain.authorize).toHaveBeenCalledTimes(1);
+    expect(s.payments.get("q1")?.status).toBe("paid");
+  });
+
   it.each([true, false])("reserves an outcome quote and charges only when checks pass (%s)", async (pass) => {
     const s = setup();
     s.endpoint.mode = "outcome"; s.endpoint.url = "https://provider.example/ocr";

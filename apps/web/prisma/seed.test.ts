@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
-import type { PrismaClient } from "../lib/generated/prisma/client";
+import { Prisma, type PrismaClient } from "../lib/generated/prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decryptWalletSecret } from "../lib/server/wallets";
 import { seedDemo } from "./seed";
@@ -23,10 +23,10 @@ function database() {
     org: { upsert: upsert(orgs) }, provider: { upsert: upsert() },
     endpoint: {
       upsert: upsert(endpoints),
-      updateMany: vi.fn(async ({ where, data }: { where: { id: string; url: null }; data: { url: string } }) => {
-        const row = endpoints.get(where.id);
-        if (!row || row.url !== null) return { count: 0 };
-        endpoints.set(where.id, { ...row, ...data });
+      updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+        const row = endpoints.get(String(where.id));
+        if (!row || !Object.entries(where).every(([key, value]) => row[key] === value)) return { count: 0 };
+        endpoints.set(String(where.id), { ...row, ...data });
         return { count: 1 };
       }),
     }, agent: { upsert: upsert(agents) },
@@ -64,9 +64,36 @@ describe("database demo seed", () => {
     expect(storedWrites).not.toContain("stl_agent_bookkeeper_demo");
     expect(tx.endpoint.upsert).toHaveBeenCalledTimes(3);
     expect(tx.endpoint.upsert.mock.calls.map(([args]) => args.create.price)).toEqual([1333334n, 10000000n, 5333334n]);
+    expect(tx.endpoint.upsert.mock.calls.map(([args]) => args.create.mode)).toEqual(["per_call", "per_call", "per_call"]);
     expect(tx.endpoint.upsert.mock.calls.map(([args]) => args.create.url)).toEqual([
       "http://localhost:3001/parse-receipt", "http://localhost:3001/parse-receipt-pro", "http://localhost:3001/lookup",
     ]);
+  });
+
+  it("upgrades only the original mock OCR endpoint to usage billing without rewriting prices, URLs, or past payments", async () => {
+    vi.stubEnv("WALLET_ENC_KEY", "12".repeat(32));
+    const { tx, client, endpoints } = database();
+    await seedDemo(client, { phpPerXlm: 15, apiKey: "stl_agent_bookkeeper_demo" });
+    const original = {
+      ...endpoints.get("resibo_parse"), providerId: "resibo", mode: "outcome",
+      price: 99n, url: "https://provider.example/parse-receipt",
+      criteriaId: "resibo.receipt.v1", criteria: { minConfidence: 0.85 },
+    };
+    endpoints.set("resibo_parse", original);
+    await seedDemo(client, { phpPerXlm: 15, apiKey: "stl_agent_bookkeeper_demo" });
+    expect(endpoints.get("resibo_parse")).toMatchObject({
+      ...original, mode: "per_call", criteriaId: null, criteria: Prisma.DbNull,
+    });
+    expect(tx.endpoint.updateMany).toHaveBeenCalledWith({
+      where: { id: "resibo_parse", providerId: "resibo", mode: "outcome" },
+      data: expect.objectContaining({ mode: "per_call", criteriaId: null }),
+    });
+    const upgraded = { ...endpoints.get("resibo_parse") };
+    await seedDemo(client, { phpPerXlm: 15, apiKey: "stl_agent_bookkeeper_demo" });
+    expect(endpoints.get("resibo_parse")).toEqual(upgraded);
+    endpoints.set("resibo_parse", { ...original, providerId: "custom-provider" });
+    await seedDemo(client, { phpPerXlm: 15, apiKey: "stl_agent_bookkeeper_demo" });
+    expect(endpoints.get("resibo_parse")).toEqual({ ...original, providerId: "custom-provider" });
   });
 
   it("preserves existing wallet identities, revocations and policies when rerun", async () => {

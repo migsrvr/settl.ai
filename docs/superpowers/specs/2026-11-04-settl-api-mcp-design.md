@@ -7,6 +7,7 @@
   - The demo agent is a scripted AI SDK agent that uses the MCP tools.
   - Payments settle in testnet XLM, shown in pesos at a fixed demo rate (`PHP_PER_XLM`).
   - All four automations are in scope: outbound webhooks, auto-claim, low-budget alerts and approvals.
+  - **Revision 2026-11-07, requested by the user:** the mock demo products, including `resibo_parse` (PHP 2), use per-call billing. An allowed paid service invocation authorizes the quoted fee before calling the provider; mock quality or a later provider error does not undo a confirmed fee. Discovery, budget reads and quotes remain free, policy refusals do not charge, and pending transactions are never reported as settled. Outcome billing remains an explicitly configured product option rather than the mock OCR default. Existing quotes and payment records retain their original terms; no historical uncharged call is rebilled.
 
 ## 1. Facts from the Noir source and Velo docs
 

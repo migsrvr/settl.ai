@@ -1,0 +1,15 @@
+.git
+.vercel
+**/.vercel
+node_modules
+**/node_modules
+.next
+**/.next
+.env*
+**/.env*
+**/*.log
+**/*.tsbuildinfo
+apps/web/lib/generated/prisma
+apps/resibo/dist
+**/.provider-build-test-*
+*.pdf

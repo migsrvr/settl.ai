@@ -32,7 +32,7 @@ The mission asks the model to perform these actions using the registered `settl_
 1. Read `settl_get_budget` and the real policy.
 2. Discover prices with `settl_list_services`.
 3. Request `resibo_parse` with `{ "fixture": "clean" }`. Record an expense only from a paid receipt with a transaction hash and valid receipt line items.
-4. Request `resibo_parse` with `{ "fixture": "blurry" }`. Log `not_charged`; do not record an expense.
+4. Request `resibo_parse` with `{ "fixture": "blurry" }`. Report the actual usage charge. The mock product now defaults to per-call billing at PHP2, including blurry samples; low-confidence receipt data still must not create a business expense. Explicitly configured outcome products retain their conditional charging behavior.
 5. Request the PHP15 `resibo_pro` service with a PHP10 limit. Report the broker's `declined` / `over_max_price` result.
 6. Request the PHP8 `geoph_lookup` service. Display the real `/buyer/approvals/<id>` notification URL and poll `settl_check_approval` for up to 60 seconds, normally every three seconds. Once approved, the model can resume the same call with the same `approvalId` exactly once.
 

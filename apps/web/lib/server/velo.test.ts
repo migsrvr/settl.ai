@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import { Keypair } from "@stellar/stellar-sdk";
 import type { PaymentIntent, WebhookPaymentEvent } from "@carts1024/velo-sdk";
 import type { PrismaClient } from "../generated/prisma/client";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createVeloService } from "./velo";
 
 const treasury = Keypair.random();
@@ -42,6 +42,7 @@ function seed(overrides: Partial<Row> = {}) {
 const service = () => createVeloService({ db: db as unknown as PrismaClient, velo: { checkout: { sessions: { create: checkout } }, paymentIntents: { retrieve } }, treasury, chain: { fundEscrow, balanceOf }, webhookSecret: "webhook-secret", newId: () => "local" });
 beforeEach(() => {
   vi.resetAllMocks(); rows = []; deliveries = new Map(); agent.status = "active";
+  vi.spyOn(console, "warn").mockImplementation(() => {});
   checkout.mockResolvedValue(intent({ status: "created" })); retrieve.mockResolvedValue(intent());
   fundEscrow.mockResolvedValue({ status: "SUCCESS", hash: fundHash, innerHash: fundHash, transport: "relayer" }); balanceOf.mockResolvedValue(12_345n);
   db.agent.findFirst.mockImplementation(async ({ where }) => where.id === agent.id && where.orgId === agent.orgId ? { ...agent } : null);
@@ -111,7 +112,70 @@ describe("Velo checkout", () => {
   });
 });
 
+afterEach(() => { vi.restoreAllMocks(); });
+
 describe("verified Velo payments", () => {
+  it.each([42, undefined])("accepts Velo's signed payment.created with registryProjectId %s without funding", async (registryProjectId) => {
+    const value = { ...event({}, "payment.created"), project: { ...event().project, registryProjectId } };
+    expect(await service().handleVeloWebhook(signed(value))).toEqual({ received: true });
+    expect(db.webhookEvent.upsert).toHaveBeenCalledOnce();
+    expect(fundEscrow).not.toHaveBeenCalled(); expect(retrieve).not.toHaveBeenCalled();
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+  it("funds a numeric-registry payment once only after retrieving and matching the stored paid intent", async () => {
+    const row = seed(); const api = service();
+    const value = { ...event(), project: { ...event().project, registryProjectId: 42 } };
+    await api.handleVeloWebhook(signed(value)); await api.handleVeloWebhook(signed(value, "second"));
+    expect(retrieve).toHaveBeenCalledWith("pi");
+    expect(fundEscrow).toHaveBeenCalledExactlyOnceWith(treasury, agent.deviceHash, row.amount);
+    expect(row).toMatchObject({ status: "completed", fundTxHash: fundHash });
+  });
+  it.each(["bad signature", "expired signature", "tampered body"])("rejects a numeric-registry event with %s before storage", async (failure) => {
+    const input = signed({ ...event(), project: { ...event().project, registryProjectId: 42 } });
+    if (failure === "bad signature") input.signature = input.signature.replace(/v1=.*/, `v1=${"0".repeat(64)}`);
+    if (failure === "expired signature") {
+      const timestamp = Math.floor(Date.now() / 1000) - 600;
+      input.signature = `t=${timestamp},v1=${createHmac("sha256", "webhook-secret").update(`${timestamp}.${input.payload}`).digest("hex")}`;
+    }
+    if (failure === "tampered body") input.payload += " ";
+    await expect(service().handleVeloWebhook(input)).rejects.toMatchObject({ status: 400, code: "invalid_velo_signature" });
+    expect(db.webhookEvent.upsert).not.toHaveBeenCalled(); expect(fundEscrow).not.toHaveBeenCalled();
+  });
+  it.each([-1, 1.5, null, {}, true])("rejects unsupported signed registry metadata %s", async (registryProjectId) => {
+    await expect(service().handleVeloWebhook(signed({ ...event(), project: { ...event().project, registryProjectId } }))).rejects.toMatchObject({ status: 400, code: "invalid_velo_payload" });
+    expect(db.webhookEvent.upsert).not.toHaveBeenCalled(); expect(fundEscrow).not.toHaveBeenCalled();
+  });
+  it("validates all required payment fields after the authenticated registry compatibility path", async () => {
+    await expect(service().handleVeloWebhook(signed({ ...event(), project: { ...event().project, registryProjectId: 42 }, paymentIntent: { id: "pi" } }))).rejects.toMatchObject({ status: 400, code: "invalid_velo_payload" });
+    expect(db.webhookEvent.upsert).not.toHaveBeenCalled(); expect(fundEscrow).not.toHaveBeenCalled();
+  });
+  it("retains independent amount matching for a numeric-registry event", async () => {
+    seed(); retrieve.mockResolvedValueOnce(intent({ amount: "2.0000000" }));
+    await expect(service().handleVeloWebhook(signed({ ...event(), project: { ...event().project, registryProjectId: 42 } }))).rejects.toMatchObject({ status: 400, code: "velo_payment_mismatch" });
+    expect(fundEscrow).not.toHaveBeenCalled();
+  });
+  it.each([
+    { label: "missing signature", reason: "missing_signature", code: "invalid_velo_signature" },
+    { label: "changed body", reason: "signature_mismatch", code: "invalid_velo_signature" },
+    { label: "expired signature", reason: "signature_timestamp_outside_tolerance", code: "invalid_velo_signature" },
+    { label: "signed invalid project", reason: "invalid_project_fields", code: "invalid_velo_payload" },
+    { label: "signed unsupported version", reason: "invalid_event_shape", code: "invalid_velo_payload" },
+  ])("diagnoses $label without logging signed content or performing payment work", async ({ label, reason, code }) => {
+    let input = signed(event());
+    if (label === "missing signature") input = { ...input, signature: "" };
+    if (label === "changed body") input = { ...input, payload: `${input.payload} ` };
+    if (label === "expired signature") {
+      const timestamp = Math.floor(Date.now() / 1000) - 600;
+      input.signature = `t=${timestamp},v1=${createHmac("sha256", "webhook-secret").update(`${timestamp}.${input.payload}`).digest("hex")}`;
+    }
+    if (label === "signed invalid project") input = signed({ ...event(), project: { id: "project" } });
+    if (label === "signed unsupported version") input = signed({ ...event(), version: "secret-payload-version" });
+    await expect(service().handleVeloWebhook(input)).rejects.toMatchObject({ status: 400, code });
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith("velo_webhook_verification_failed", { reason });
+    expect(db.webhookEvent.upsert).not.toHaveBeenCalled();
+    expect(retrieve).not.toHaveBeenCalled(); expect(fundEscrow).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toMatch(/webhook-secret|secret-payload-version|v1=/);
+  });
   it("checks the exact raw signature before parsing or touching storage", async () => {
     const valid = signed(event());
     await expect(service().handleVeloWebhook({ ...valid, payload: `${valid.payload} ` })).rejects.toMatchObject({ status: 400 });

@@ -8,7 +8,7 @@ import { runLiveDemo } from "../../../../scripts/demo-e2e";
 import type { Operation } from "../../../../apps/agent/src/ledger";
 
 vi.mock("./db", () => ({ getDb: vi.fn() }));
-const cleanHash = "a".repeat(64), geoHash = "b".repeat(64);
+const cleanHash = "a".repeat(64), geoHash = "b".repeat(64), blurryHash = "c".repeat(64);
 const cleanPrice = 1_333_334n, geoPrice = 5_333_334n;
 
 function demonstration() {
@@ -20,7 +20,7 @@ function demonstration() {
   const output = vi.fn();
   const callTool = vi.fn(async (name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> => {
     if (name === "settl_list_services") return { services: [
-      { id: "resibo_parse", name: "OCR", providerId: "resibo", mode: "outcome", amountStroops: cleanPrice.toString(), displayPrice: { currency: "PHP", amount: "2.00" } },
+      { id: "resibo_parse", name: "OCR", providerId: "resibo", mode: "per_call", amountStroops: cleanPrice.toString(), displayPrice: { currency: "PHP", amount: "2.00" } },
       { id: "resibo_pro", name: "Pro", providerId: "resibo", mode: "per_call", amountStroops: "10000000", displayPrice: { currency: "PHP", amount: "15.00" } },
       { id: "geoph_lookup", name: "Lookup", providerId: "geoph", mode: "per_call", amountStroops: geoPrice.toString(), displayPrice: { currency: "PHP", amount: "8.00" } },
     ] };
@@ -38,31 +38,34 @@ function demonstration() {
       return { status: "paid", receipt: paid, data: { city: "Makati" } };
     }
     if ((args.input as { fixture: string }).fixture === "blurry") {
-      const free = receipt("q-blurry", "not_charged", 0n); receipts.push(free);
-      return { status: "not_charged", reason: "checks_failed", receipt: free, data: { confidence: 0.42 } };
+      balance -= cleanPrice; spent += cleanPrice;
+      const paid = { ...receipt("q-blurry", "paid", cleanPrice, blurryHash), checks: [] }; receipts.push(paid);
+      return { status: "paid", receipt: paid, data: { confidence: 0.42 } };
     }
     balance -= cleanPrice; spent += cleanPrice;
-    const paid = receipt("q-clean", "paid", cleanPrice, cleanHash); receipts.push(paid);
+    const paid = { ...receipt("q-clean", "paid", cleanPrice, cleanHash), checks: [] }; receipts.push(paid);
     return { status: "paid", receipt: paid, data: { confidence: 0.98 } };
   });
-  const proof = { readAuthorizeTx: vi.fn(async (hash: string) => ({ ok: true, args: { agent: "GAGENT", deviceHash: "a".repeat(64), merchant: "GMERCHANT", asset: TESTNET_XLM, amount: hash === cleanHash ? cleanPrice : geoPrice, nonce: 1n } })) };
+  const proof = { readAuthorizeTx: vi.fn(async (hash: string) => ({ ok: true, args: { agent: "GAGENT", deviceHash: "a".repeat(64), merchant: "GMERCHANT", asset: TESTNET_XLM, amount: hash === geoHash ? geoPrice : cleanPrice, nonce: 1n } })) };
   const ledger = { load: vi.fn(async () => {}), operation: (key: string) => operations.get(key), saveOperation: vi.fn(async (key: string, op: Operation) => { operations.set(key, op); }) };
   const sleep = vi.fn(async (ms: number) => { time += ms; });
   return { callTool, output, proof, operations, approval, ledger, sleep, setBalance: (value: bigint) => { balance = value; }, options: { connection: { callTool, close: vi.fn(async () => {}) }, proof, ledger, output, pause: async () => {}, sleep, now: () => time, endpoint: "http://localhost:3000/mcp", approvalTimeoutMs: 9000 } };
 }
 
 describe("real-demo orchestration without simulated success", () => {
-  it("uses live-shaped MCP results, confirms both authorizations and resumes the exact approval once", async () => {
+  it("confirms usage charges for clean and blurry mocks and resumes the exact approval once", async () => {
     const demo = demonstration();
     await runLiveDemo(demo.options);
     const writes = demo.callTool.mock.calls.filter(([name]) => name === "settl_call");
     expect(writes).toHaveLength(5);
     expect(writes[0][1]).toEqual({ serviceId: "resibo_parse", input: { fixture: "clean" }, maxPricePhp: "10.00" });
     expect(writes[4][1]).toEqual({ serviceId: "geoph_lookup", input: { city: "Makati" }, maxPricePhp: "10.00", approvalId: "approval-1" });
-    expect(demo.proof.readAuthorizeTx).toHaveBeenCalledTimes(2);
+    expect(demo.proof.readAuthorizeTx).toHaveBeenCalledTimes(3);
+    expect(demo.operations.get("demo:blurry")).toMatchObject({ status: "paid", txHash: blurryHash });
     expect(demo.sleep).toHaveBeenCalledWith(3000);
     const text = demo.output.mock.calls.map(([line]) => line).join("\n");
     expect(text).toContain(`https://stellar.expert/explorer/testnet/tx/${cleanHash}`);
+    expect(text).toContain(`https://stellar.expert/explorer/testnet/tx/${blurryHash}`);
     expect(text).toContain("http://localhost:3000/buyer/approvals/approval-1");
     expect(text).toContain("over_max_price");
   });
@@ -92,18 +95,18 @@ describe("real-demo orchestration without simulated success", () => {
     await expect(runLiveDemo(demo.options)).rejects.toThrow(/ledger|authorization/i);
     expect(demo.callTool.mock.calls.filter(([name]) => name === "settl_call")).toHaveLength(1);
   });
-  it("requires passing outcome checks before claiming a clean result succeeded", async () => {
+  it("rejects stale outcome billing before making any new purchase", async () => {
     const demo = demonstration();
     const original = demo.callTool.getMockImplementation()!;
     demo.callTool.mockImplementation(async (name, args) => {
       const result = await original(name, args);
-      if (name === "settl_call" && args.serviceId === "resibo_parse") (result.receipt as Record<string, unknown>).checks = [];
+      if (name === "settl_list_services") (result.services as Record<string, unknown>[])[0].mode = "outcome";
       return result;
     });
-    await expect(runLiveDemo(demo.options)).rejects.toThrow(/verification/i);
-    expect(demo.callTool.mock.calls.filter(([name]) => name === "settl_call")).toHaveLength(1);
+    await expect(runLiveDemo(demo.options)).rejects.toThrow(/setup/i);
+    expect(demo.callTool.mock.calls.filter(([name]) => name === "settl_call")).toHaveLength(0);
   });
-  it("does not claim zero charge when the observed balance changed", async () => {
+  it("does not claim a usage charge when the observed balance is wrong", async () => {
     const demo = demonstration();
     const original = demo.callTool.getMockImplementation()!;
     demo.callTool.mockImplementation(async (name, args) => {

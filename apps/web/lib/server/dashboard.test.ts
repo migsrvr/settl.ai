@@ -1,12 +1,36 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ cookie: 'buyer', org: vi.fn(), agents: vi.fn(), payments: vi.fn(), approvals: vi.fn(), providers: vi.fn(), provider: vi.fn(), balance: vi.fn(), pending: vi.fn() }));
+const mocks = vi.hoisted(() => ({ cookie: 'buyer', connection: vi.fn(), org: vi.fn(), agents: vi.fn(), payments: vi.fn(), approvals: vi.fn(), providers: vi.fn(), provider: vi.fn(), balance: vi.fn(), pending: vi.fn() }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => ({ value: mocks.cookie }) }) }));
+vi.mock('next/server', () => ({ connection: mocks.connection }));
 vi.mock('./db', () => ({ getDb: () => ({ org: { findUnique: mocks.org }, agent: { findMany: mocks.agents }, payment: { findMany: mocks.payments }, approval: { findMany: mocks.approvals }, provider: { findMany: mocks.providers, findUnique: mocks.provider } }) }));
 vi.mock('@settl/stellar', () => ({ loadStellarConfig: () => ({}), createStellarClient: () => ({ balanceOf: mocks.balance, pendingBalance: mocks.pending }) }));
 import { loadBuyerDashboard, loadProviderDashboard } from './dashboard';
 describe('live dashboard ownership and safe DTOs', () => {
   beforeEach(() => { vi.clearAllMocks(); mocks.cookie = 'buyer'; mocks.org.mockResolvedValue({ id: 'juan', role: 'buyer', name: 'Juan', walletPublic: 'GJUAN' }); mocks.agents.mockResolvedValue([]); mocks.payments.mockResolvedValue([]); mocks.approvals.mockResolvedValue([]); mocks.providers.mockResolvedValue([]); });
+  it.each(['buyer', 'provider'] as const)('waits for a request before reading %s dashboard data or the current time', async (role) => {
+    mocks.cookie = role;
+    let allowRequest!: () => void;
+    mocks.connection.mockReturnValueOnce(new Promise<void>(resolve => { allowRequest = resolve; }));
+    const clock = vi.spyOn(globalThis, 'Date');
+    try {
+      const loading = role === 'buyer' ? loadBuyerDashboard() : loadProviderDashboard();
+      await Promise.resolve();
+      expect(mocks.connection).toHaveBeenCalledOnce();
+      expect(mocks.org).not.toHaveBeenCalled();
+      expect(mocks.approvals).not.toHaveBeenCalled();
+      expect(clock).not.toHaveBeenCalled();
+      allowRequest();
+      await loading;
+    } finally { allowRequest(); clock.mockRestore(); }
+  });
+  it.each(['buyer', 'provider'] as const)('does not swallow the %s prerender suspension signal', async (role) => {
+    mocks.cookie = role;
+    const suspension = new Error('prerender interrupted');
+    mocks.connection.mockRejectedValueOnce(suspension);
+    await expect(role === 'buyer' ? loadBuyerDashboard() : loadProviderDashboard()).rejects.toBe(suspension);
+    expect(mocks.org).not.toHaveBeenCalled();
+  });
   it('rejects a provider cookie before querying buyer data', async () => { mocks.cookie = 'provider'; expect(await loadBuyerDashboard()).toBeNull(); expect(mocks.org).not.toHaveBeenCalled(); });
   it('requires the stored organization role and scopes every buyer query', async () => {
     const data = await loadBuyerDashboard(); expect(data?.agents).toEqual([]);
