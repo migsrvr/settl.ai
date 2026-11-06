@@ -1,74 +1,42 @@
-import type { Metadata } from "next";
-import { notFound } from "next/navigation";
-import { AppShell } from "@/components/app-shell";
-import { ActivityTable } from "@/components/buyer/activity-table";
-import { AgentBudget } from "@/components/buyer/agent-budget";
-import { Button, Pill } from "@/components/ui";
-import { AGENTS } from "@/lib/demo-data";
-import { formatPeso } from "@/lib/format";
-
-export function generateStaticParams() {
-  return AGENTS.filter((a) => a.status === "active").map((a) => ({ id: a.id }));
-}
-
-export const metadata: Metadata = { title: "Agent" };
-
-export default async function AgentPage({ params }: PageProps<"/buyer/agents/[id]">) {
+import type { Metadata } from 'next';
+import { Suspense } from 'react';
+import { AppShell } from '@/components/app-shell';
+import { ActivityTable } from '@/components/buyer/activity-table';
+import { AgentBudget } from '@/components/buyer/agent-budget';
+import { AgentControls } from '@/components/buyer/live-agent-controls';
+import { DashboardLoading, DashboardUnavailable } from '@/components/buyer/live-state';
+import { money, sum, today, when } from '@/components/buyer/live-money';
+import { Pill } from '@/components/ui';
+import { loadBuyerDashboard } from '@/lib/server/dashboard';
+export const metadata: Metadata = { title: 'Agent' };
+export function generateStaticParams() { return [{ id: 'bookkeeper' }]; }
+async function LiveAgent({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const agent = AGENTS.find((a) => a.id === id && a.status === "active");
-  if (!agent) notFound();
-
-  return (
-    <AppShell role="buyer" active="/buyer/agents/bookkeeper" crumbs={[{ href: "/buyer", label: "Agents" }, { label: agent.name }]}>
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="font-display text-2xl font-bold tracking-[-0.02em]">{agent.name}</h1>
-            <Pill tone="paid">Active</Pill>
-          </div>
-          <span className="font-mono text-xs text-muted">agt_9f2c41e0, wallet GAGT…7KQ2</span>
-        </div>
-        <Button variant="danger">Revoke agent</Button>
-      </div>
-
-      <div className="flex flex-wrap items-start gap-10">
-        <AgentBudget left={agent.left} loaded={agent.loaded} />
-
-        <section aria-labelledby="lim-title" className="flex min-w-0 flex-[1_1_300px] flex-col">
-          <div className="flex items-center justify-between pb-2">
-            <h2 id="lim-title" className="text-lg font-medium">Limits</h2>
-            <Button size="sm">Edit limits</Button>
-          </div>
-          <h3 className="border-t border-rule pb-1 pt-3 text-xs font-normal text-muted">Enforced on Stellar</h3>
-          <dl>
-            <div className="flex justify-between py-2">
-              <dt className="text-ink-2">Most per payment</dt>
-              <dd className="font-medium">{agent.cap ? formatPeso(agent.cap) : "Not set"}</dd>
-            </div>
-            <div className="flex justify-between py-2">
-              <dt className="text-ink-2">Stops working on</dt>
-              <dd className="font-medium">{agent.expires}</dd>
-            </div>
-          </dl>
-          <h3 className="border-t border-rule pb-1 pt-3 text-xs font-normal text-muted">Checked by Settl</h3>
-          <dl className="border-b border-rule">
-            <div className="flex justify-between py-2">
-              <dt className="text-ink-2">Providers</dt>
-              <dd className="font-medium">ResiboAI, GeoPH</dd>
-            </div>
-            <div className="flex justify-between py-2">
-              <dt className="text-ink-2">Pays without asking</dt>
-              <dd className="font-medium">Up to ₱5.00</dd>
-            </div>
-            <div className="flex justify-between py-2">
-              <dt className="text-ink-2">Most per day</dt>
-              <dd className="font-medium">₱20.00</dd>
-            </div>
-          </dl>
-        </section>
-      </div>
-
-      <ActivityTable />
-    </AppShell>
-  );
+  const data = await loadBuyerDashboard();
+  if (!data) return <DashboardUnavailable/>;
+  const agent = data.agents.find(a => a.id === id);
+  if (!agent) return <section><h1 className="font-display text-2xl font-bold">Agent unavailable</h1><p>This agent does not belong to your workspace or no longer exists.</p></section>;
+  const calls = data.calls.filter(c => c.agentId === agent.id);
+  const spent = sum(calls.filter(c => c.status === 'paid' && c.confirmedAt && today(c.confirmedAt)).map(c => c.amountStroops));
+  const limits = agent.policy ? [
+    ['Most per payment', money(agent.policy.cap, data.rateCents)],
+    ['Stops working on', when(agent.policy.expiresAt)],
+    ['Pays without asking', money(agent.policy.auto, data.rateCents)],
+    ['Most per day', money(agent.policy.daily, data.rateCents)],
+    ['Providers', agent.policy.allowlist.length ? agent.policy.allowlist.map(id => data.providers.find(p => p.id === id)?.displayName ?? id).join(', ') : 'No providers allowed'],
+  ] : [];
+  return <>
+    <header className="flex flex-col gap-3"><div className="flex flex-wrap items-center gap-3"><h1 className="font-display text-2xl font-bold">{agent.name}</h1><Pill tone={agent.status === 'active' ? 'paid' : 'neutral'}>{agent.status}</Pill></div><p className="break-all font-mono text-sm">{agent.id}</p><p className="break-all font-mono text-sm">Wallet {agent.agentPublic}</p></header>
+    <div className="flex flex-wrap items-start gap-10">
+      <AgentBudget agentId={agent.id} balance={agent.balance} rateCents={data.rateCents} topups={agent.topups} spentToday={spent} heldStroops={agent.heldStroops} active={agent.status === 'active'}/>
+      <section className="flex min-w-0 flex-[1_1_300px] flex-col gap-4"><h2 className="text-lg font-medium">Limits</h2>
+        {agent.policy ? <dl>{limits.map(([label, value]) => <div key={label} className="flex flex-wrap justify-between gap-3 border-t border-rule py-3"><dt>{label}</dt><dd className="font-medium">{value}</dd></div>)}</dl> : <p>No spending policy is stored.</p>}
+        <AgentControls agent={agent} providers={data.providers} rateCents={data.rateCents}/>
+      </section>
+    </div>
+    <ActivityTable calls={calls} approvals={data.approvals.filter(a => a.agentId === agent.id)} rateCents={data.rateCents}/>
+  </>;
+}
+export default function AgentPage({ params }: PageProps<'/buyer/agents/[id]'>) {
+  return <AppShell role="buyer" active="/buyer" crumbs={[{ href: '/buyer', label: 'Agents' }, { label: 'Agent' }]}><Suspense fallback={<DashboardLoading/>}><LiveAgent params={params}/></Suspense></AppShell>;
 }

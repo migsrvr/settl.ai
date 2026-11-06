@@ -1,161 +1,21 @@
-"use client";
-
-import { useState, type FormEvent } from "react";
-import { Button, TabBar } from "@/components/ui";
-
-const CODE = {
-  express: `import { settl } from "settl-sdk";
-
-app.post("/parse-receipt",
-  settl({ endpointId: "ep_parse_receipt" }),
-  parseReceiptHandler);`,
-  next: `import { withSettl } from "settl-sdk/next";
-
-export const POST = withSettl(
-  { endpointId: "ep_parse_receipt" },
-  parseReceiptHandler);`,
-};
-
-type Framework = keyof typeof CODE;
-
-export function IntegrateSection() {
-  const [fw, setFw] = useState<Framework>("express");
-  const [copied, setCopied] = useState(false);
-  const [showKey, setShowKey] = useState(false);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(CODE[fw]);
-      setCopied(true);
-    } catch {
-      setCopied(false);
-    }
-  }
-
-  return (
-    <>
-      <section aria-labelledby="int-title" className="flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-4">
-          <h2 id="int-title" className="text-lg font-medium">Add Settl to your server</h2>
-          <Button size="sm" onClick={copy}>{copied ? "Copied" : "Copy code"}</Button>
-        </div>
-        <TabBar
-          label="Framework"
-          tabs={[
-            { id: "express", label: "Express" },
-            { id: "next", label: "Next.js" },
-          ]}
-          value={fw}
-          onChange={(id) => {
-            setFw(id);
-            setCopied(false);
-          }}
-        />
-        <pre className="mt-2 overflow-x-auto rounded-lg bg-ink p-6 font-mono text-sm leading-relaxed text-code">{CODE[fw]}</pre>
-      </section>
-
-      <section aria-labelledby="keys-title" className="flex flex-col gap-2">
-        <h2 id="keys-title" className="text-lg font-medium">Provider key</h2>
-        <div className="flex flex-wrap items-center gap-4 border-y border-rule py-4">
-          <span className="min-w-0 flex-[1_1_280px] overflow-x-auto whitespace-nowrap font-mono text-sm">
-            {showKey ? "stl_test_[YOUR PROVIDER KEY]" : "stl_test_••••••••••••••••4f2a"}
-          </span>
-          <span className="text-xs text-muted">Set as SETTL_PROVIDER_KEY. Created Nov 5.</span>
-          <Button onClick={() => setShowKey((v) => !v)}>{showKey ? "Hide key" : "Reveal key"}</Button>
-        </div>
-      </section>
-    </>
-  );
+'use client';
+import { useState, type FormEvent } from 'react';
+import { useRouter } from 'next/navigation';
+import { Button } from '@/components/ui';
+import type { ProviderDashboard } from '@/lib/server/dashboard';
+import { checkoutUrl, phpToExactStroops } from '@/components/buyer/live-money';
+const field = 'min-h-10 rounded-md border border-edge bg-surface px-3';
+export function IntegrateSection({ endpoints }: { endpoints: ProviderDashboard['endpoints'] }) {
+  const [selected, setSelected] = useState(endpoints[0]?.id ?? ''); const [message, setMessage] = useState(''); const endpoint = endpoints.find(e => e.id === selected) ?? endpoints[0];
+  const code = endpoint ? `import { settl } from "@settl/sdk";\n\napp.${endpoint.method.toLowerCase()}(${JSON.stringify(endpoint.route)},\n  settl({ endpointId: ${JSON.stringify(endpoint.id)} }),\n  yourJsonHandler);` : '';
+  async function copy() { try { await navigator.clipboard.writeText(code); setMessage('Code copied.'); } catch { setMessage('Copy failed. Select the code and copy it manually.'); } }
+  return <section aria-labelledby="integration-title" className="flex flex-col gap-4"><h2 id="integration-title" className="text-lg font-medium">Add Settl to your Express server</h2>{endpoint ? <><label htmlFor="integration-endpoint">Endpoint</label><select id="integration-endpoint" value={endpoint.id} onChange={e => { setSelected(e.target.value); setMessage(''); }} className={field}>{endpoints.map(e => <option key={e.id} value={e.id}>{e.name} ({e.route})</option>)}</select><pre className="overflow-x-auto rounded-lg bg-ink p-6 font-mono text-sm text-code">{code}</pre><Button onClick={copy} className="self-start">Copy code</Button><p role="status">{message}</p><p>Set SETTL_API_URL and SETTL_PROVIDER_KEY on your server. The provider key is configured by the operator and is never displayed here. Outcome handlers must return JSON so Settl can verify their results.</p></> : <p>Add an endpoint to see its integration code.</p>}</section>;
 }
-
-const MODES = [
-  { id: "outcome", title: "Only on a passing result", desc: "Settl on Result. The agent signs first, Settl submits after your checks pass." },
-  { id: "per-call", title: "On every call", desc: "The agent pays before your handler runs." },
-] as const;
-
-export function AddRouteForm() {
-  const [mode, setMode] = useState<(typeof MODES)[number]["id"]>("outcome");
-  const [route, setRoute] = useState("");
-  const [price, setPrice] = useState("");
-  const [errors, setErrors] = useState<{ route?: string; price?: string }>({});
-  const [added, setAdded] = useState<string | null>(null);
-
-  function submit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const next: typeof errors = {};
-    if (!/^(GET|POST|PUT|PATCH|DELETE) \/\S+$/.test(route.trim())) next.route = "Use a method and a path, like POST /translate.";
-    const n = Number(price);
-    if (!price || Number.isNaN(n) || n <= 0) next.price = "Enter a price above ₱0, like 2.00.";
-    setErrors(next);
-    if (next.route) return document.getElementById("route")?.focus();
-    if (next.price) return document.getElementById("price")?.focus();
-    setAdded(`${route.trim()} at ₱${n.toFixed(2)}`);
-    setRoute("");
-    setPrice("");
+export function AddRouteForm({ rateCents }: { rateCents: string | null }) {
+  const router = useRouter(); const [name, setName] = useState(''); const [route, setRoute] = useState(''); const [url, setUrl] = useState(''); const [price, setPrice] = useState(''); const [mode, setMode] = useState<'outcome' | 'per_call'>('outcome'); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [saved, setSaved] = useState(false); const [uncertain, setUncertain] = useState(false);
+  async function submit(event: FormEvent) { event.preventDefault(); if (busy || uncertain) return; setError(''); setSaved(false); let body;
+    try { if (!name.trim()) throw new Error('Enter a route name.'); if (!/^\/\S*$/.test(route.trim())) throw new Error('Use a path beginning with /, like /translate.'); const providerUrl = checkoutUrl(url.trim()); const priceStroops = phpToExactStroops(price, rateCents); if (BigInt(priceStroops) <= 0n) throw new Error('Enter a price above zero.'); body = { name: name.trim(), method: 'POST', route: route.trim(), url: providerUrl, priceStroops, mode, ...(mode === 'outcome' ? { criteriaId: 'receipt_v1' } : {}) }; } catch (err) { setError(err instanceof Error ? err.message : 'Check the form.'); return; }
+    setBusy(true); try { const response = await fetch('/api/provider/endpoints', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) { setError(typeof data.error === 'string' ? data.error : 'Route could not be saved. Check the fields and try again.'); return; } if (typeof data.endpointId !== 'string') throw new Error(); setSaved(true); setName(''); setRoute(''); setUrl(''); setPrice(''); router.refresh(); } catch { setUncertain(true); setError('The save result is unavailable. Reload and check your priced routes before submitting again.'); router.refresh(); } finally { setBusy(false); }
   }
-
-  return (
-    <form onSubmit={submit} noValidate aria-labelledby="new-title" className="flex min-w-0 flex-[1_1_300px] flex-col gap-4 rounded-xl border border-rule bg-surface p-6">
-      <h2 id="new-title" className="text-lg font-medium">Price a new route</h2>
-      <div className="flex flex-col gap-1">
-        <label htmlFor="route" className="text-sm font-medium">Route</label>
-        <input
-          id="route"
-          name="route"
-          autoComplete="off"
-          placeholder="POST /translate"
-          value={route}
-          onChange={(e) => setRoute(e.target.value)}
-          aria-invalid={errors.route ? true : undefined}
-          aria-describedby="route-help"
-          className="min-h-10 rounded-md border border-edge bg-surface px-3 font-mono text-sm"
-        />
-        <span id="route-help" className="min-h-[1lh] text-xs text-blocked">{errors.route}</span>
-      </div>
-      <div className="flex flex-col gap-1">
-        <label htmlFor="price" className="text-sm font-medium">Price per call, in pesos</label>
-        <input
-          id="price"
-          name="price"
-          inputMode="decimal"
-          autoComplete="off"
-          placeholder="2.00"
-          value={price}
-          onChange={(e) => setPrice(e.target.value)}
-          aria-invalid={errors.price ? true : undefined}
-          aria-describedby="price-help"
-          className="min-h-10 rounded-md border border-edge bg-surface px-3"
-        />
-        <span id="price-help" className="min-h-[1lh] text-xs text-blocked">{errors.price}</span>
-      </div>
-      <fieldset className="flex flex-col gap-2">
-        <legend className="mb-1 text-sm font-medium">When agents pay</legend>
-        {MODES.map((m) => {
-          const on = m.id === mode;
-          return (
-            <label key={m.id} className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 ${on ? "border-ink bg-saffron-well" : "border-rule"}`}>
-              <input type="radio" name="mode" value={m.id} checked={on} onChange={() => setMode(m.id)} className="mt-1 size-4 accent-ink" />
-              <span className="flex flex-col">
-                <span className="font-medium">{m.title}</span>
-                <span className="text-xs text-ink-2">{m.desc}</span>
-              </span>
-            </label>
-          );
-        })}
-      </fieldset>
-      {mode === "outcome" && (
-        <div className="flex flex-col gap-1">
-          <label htmlFor="criteria" className="text-sm font-medium">Checks a result must pass</label>
-          <select id="criteria" name="criteria" className="min-h-10 rounded-md border border-edge bg-surface px-2">
-            <option>Receipt v1, 5 checks</option>
-            <option>Your own JSON schema</option>
-          </select>
-        </div>
-      )}
-      <Button type="submit" variant="primary">Add route</Button>
-      <span className="text-xs text-muted" aria-live="polite">
-        {added ? `Added ${added}. It’s live for new quotes in this demo session.` : "New prices apply to quotes issued after you save."}
-      </span>
-    </form>
-  );
+  return <form onSubmit={submit} aria-labelledby="new-route-title" className="flex min-w-0 flex-[1_1_300px] flex-col gap-4 rounded-xl border border-rule bg-surface p-6"><h2 id="new-route-title" className="text-lg font-medium">Price a new route</h2><fieldset disabled={busy || uncertain} className="flex flex-col gap-4">{[{ id: 'name', label: 'Route name', value: name, change: setName, placeholder: 'Receipt reading' }, { id: 'path', label: 'Route path', value: route, change: setRoute, placeholder: '/parse-receipt' }, { id: 'url', label: 'Provider URL', value: url, change: setUrl, placeholder: 'https://api.example.com/parse-receipt' }, { id: 'price', label: 'Price per call, PHP', value: price, change: setPrice, placeholder: '2.00' }].map(f => <div key={f.id} className="flex flex-col gap-2"><label htmlFor={`route-${f.id}`} className="font-medium">{f.label}</label><input id={`route-${f.id}`} required value={f.value} onChange={e => f.change(e.target.value)} inputMode={f.id === 'price' ? 'decimal' : undefined} type={f.id === 'url' ? 'url' : 'text'} placeholder={f.placeholder} className={field}/></div>)}<p>Routes use POST. Set the full URL of your JSON handler.</p><fieldset className="flex flex-col gap-3"><legend className="mb-2 font-medium">When agents pay</legend>{[{ id: 'outcome' as const, label: 'Only on a passing result' }, { id: 'per_call' as const, label: 'On every call' }].map(m => <label key={m.id} className="flex min-h-10 items-center gap-3"><input type="radio" name="payment-mode" checked={mode === m.id} onChange={() => setMode(m.id)} className="size-4 accent-ink"/>{m.label}</label>)}</fieldset>{mode === 'outcome' && <p>Uses the Receipt v1 verification checks.</p>}<Button type="submit" variant="primary" disabled={busy || uncertain || !rateCents}>{busy ? 'Saving route…' : 'Add route'}</Button></fieldset>{error && <p role="alert" className="text-blocked">{error}</p>}{saved && <p role="status">Route saved. New quotes use its stored settings.</p>}{!rateCents && <p role="alert">The PHP exchange rate is unavailable. Check server configuration.</p>}</form>;
 }

@@ -14,8 +14,8 @@ const NAV: Record<Role, NavItem[]> = {
   ],
   buyer: [
     { href: "/buyer", label: "Agents" },
-    { href: "/buyer/agents/bookkeeper", label: "Activity" },
-    { href: "/buyer/approvals/geoph", label: "Approvals", badge: "1" },
+    { href: "/buyer#activity", label: "Activity" },
+    { href: "/buyer#approvals", label: "Approvals" },
   ],
 };
 
@@ -116,14 +116,15 @@ export function AppShell({
                 ))}
               </nav>
             ) : (
-              <label className="flex min-h-10 max-w-[420px] flex-[1_1_260px] items-center gap-2 rounded-md border border-edge px-3 text-muted">
+              <form method="get" action={role === "provider" ? "/provider" : "/buyer"} className="flex min-h-10 max-w-[420px] flex-[1_1_260px] items-center gap-2 rounded-md border border-edge px-3 text-muted">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                   <circle cx="11" cy="11" r="7" />
                   <path d="m20 20-3.5-3.5" />
                 </svg>
-                <span className="sr-only">Search</span>
-                <input type="search" name="q" placeholder={searchHint} className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none" />
-              </label>
+                <label htmlFor="workspace-search" className="sr-only">Search</label>
+                <input id="workspace-search" type="search" name="q" maxLength={200} placeholder={searchHint} className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none" />
+                <button type="submit" className="press min-h-10 text-sm font-medium text-ink">Search</button>
+              </form>
             )}
             <Pill tone="info" className="ml-auto">
               Testnet

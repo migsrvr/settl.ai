@@ -1,0 +1,396 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum OrgRole {
+  buyer
+  provider
+}
+
+enum AgentStatus {
+  provisioning
+  active
+  revoked
+  error
+}
+
+enum PaymentMode {
+  per_call
+  outcome
+}
+
+enum QuoteStatus {
+  issued
+  paid
+  verified
+  failed
+  expired
+}
+
+enum PaymentKind {
+  tx
+  commit
+}
+
+enum PaymentStatus {
+  pending
+  paid
+  not_charged
+  blocked
+  failed
+}
+
+enum ReservationStatus {
+  held
+  settled
+  released
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  declined
+  expired
+}
+
+enum DeliveryStatus {
+  pending
+  delivered
+  failed
+}
+
+enum TopupStatus {
+  pending
+  paid
+  funding
+  completed
+  failed
+}
+
+enum ClaimStatus {
+  pending
+  completed
+  failed
+}
+
+enum VerificationResult {
+  pass
+  fail
+  error
+}
+
+// Amounts are integer stroops (Postgres bigint); never floating-point money.
+// Encrypted wallet fields hold the versioned AES-GCM envelope from wallets.ts.
+model Org {
+  id              String   @id @default(cuid())
+  name            String
+  contactName     String   @map("contact_name")
+  email           String   @unique
+  role            OrgRole
+  walletPublic    String   @unique @map("wallet_public")
+  walletSecretEnc String   @map("wallet_secret_enc")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  provider        Provider?
+  agents          Agent[]
+  webhookEndpoints WebhookEndpoint[]
+
+  @@map("orgs")
+}
+
+model Provider {
+  id             String   @id @default(cuid())
+  orgId          String   @unique @map("org_id")
+  displayName    String   @map("display_name")
+  merchantWallet String   @unique @map("merchant_wallet")
+  createdAt      DateTime @default(now()) @map("created_at")
+  org            Org      @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  endpoints      Endpoint[]
+  approvals      Approval[]
+  claims         Claim[]
+  settings       ProviderSettings?
+
+  @@map("providers")
+}
+
+model Endpoint {
+  id          String      @id @default(cuid())
+  providerId  String      @map("provider_id")
+  name        String
+  route       String
+  method      String      @default("POST")
+  // Full origin is optional until the demo provider is deployed.
+  url         String?
+  price       BigInt
+  currency    String      @default("XLM")
+  mode        PaymentMode
+  criteriaId  String?     @map("criteria_id")
+  criteria    Json?
+  active      Boolean     @default(true)
+  createdAt   DateTime    @default(now()) @map("created_at")
+  provider    Provider    @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  quotes      Quote[]
+
+  @@unique([providerId, method, route])
+  @@map("endpoints")
+}
+
+model Agent {
+  id             String      @id @default(cuid())
+  orgId          String      @map("org_id")
+  name           String
+  agentPublic    String      @unique @map("agent_public")
+  agentSecretEnc String      @map("agent_secret_enc")
+  deviceHash     String      @unique @map("device_hash")
+  status         AgentStatus @default(provisioning)
+  // Observed ledger cache only; never infer a successful funding from checkout.
+  cachedBalance  BigInt?     @map("cached_balance")
+  balanceUpdatedAt DateTime? @map("balance_updated_at")
+  // Durable owner-source registration, policy and revoke handoff identity.
+  lifecycleRecovery Json?    @map("lifecycle_recovery")
+  // Allocate under the agent row lock; at most one authorization in flight.
+  lastNonce      BigInt      @default(0) @map("last_nonce")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+  org            Org         @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  policy         Policy?
+  apiKeys        AgentApiKey[]
+  settings       AgentSettings?
+  quotes         Quote[]
+  reservations   Reservation[]
+  approvals      Approval[]
+  topups         Topup[]
+
+  @@index([orgId, status])
+  @@map("agents")
+}
+
+model Policy {
+  agentId         String   @id @map("agent_id")
+  maxAmount       BigInt   @map("max_amount")
+  asset           String
+  expiresAt       DateTime @map("expires_at")
+  dailyBudget     BigInt   @map("daily_budget")
+  maxPricePerCall BigInt   @map("max_price_per_call")
+  autoApproveUpTo BigInt   @map("auto_approve_up_to")
+  allowlist       String[] @default([])
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  agent           Agent    @relation(fields: [agentId], references: [id], onDelete: Restrict)
+
+  @@map("policies")
+}
+
+model AgentApiKey {
+  id         String    @id @default(cuid())
+  agentId    String    @map("agent_id")
+  name       String
+  // SHA-256 hex digest only. Never persist the bearer token.
+  keyHash    String    @unique @map("key_hash") @db.Char(64)
+  createdAt  DateTime  @default(now()) @map("created_at")
+  lastUsedAt DateTime? @map("last_used_at")
+  revokedAt  DateTime? @map("revoked_at")
+  agent      Agent     @relation(fields: [agentId], references: [id], onDelete: Restrict)
+
+  @@index([agentId])
+  @@map("agent_api_keys")
+}
+
+model Quote {
+  id           String      @id @default(cuid())
+  endpointId   String      @map("endpoint_id")
+  agentId      String      @map("agent_id")
+  nonce        BigInt
+  amount       BigInt
+  asset        String
+  merchant     String
+  resource     String
+  mode         PaymentMode
+  criteria     Json?
+  status       QuoteStatus @default(issued)
+  expiresAt    DateTime    @map("expires_at")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  endpoint     Endpoint    @relation(fields: [endpointId], references: [id], onDelete: Restrict)
+  agent        Agent       @relation(fields: [agentId], references: [id], onDelete: Restrict)
+  payment      Payment?
+  reservation  Reservation?
+  approval     Approval?
+  verification Verification?
+
+  @@unique([agentId, nonce])
+  @@index([agentId, status, createdAt])
+  @@map("quotes")
+}
+
+model Payment {
+  id               String        @id @default(cuid())
+  quoteId          String        @unique @map("quote_id")
+  kind             PaymentKind
+  status           PaymentStatus @default(pending)
+  txHash           String?       @unique @map("tx_hash")
+  innerHash        String?       @unique @map("inner_hash")
+  transport        String?
+  sponsorshipError String?       @map("sponsorship_error")
+  // Identity from Velo; persist before retrying an uncertain transaction.
+  recovery         Json?
+  error            String?
+  submittedAt      DateTime      @default(now()) @map("submitted_at")
+  confirmedAt      DateTime?     @map("confirmed_at")
+  quote            Quote         @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+
+  @@index([status, submittedAt])
+  @@map("payments")
+}
+
+model Reservation {
+  id            String            @id @default(cuid())
+  quoteId       String            @unique @map("quote_id")
+  agentId       String            @map("agent_id")
+  amount        BigInt
+  status        ReservationStatus @default(held)
+  expiresAt     DateTime          @map("expires_at")
+  txHash        String?           @map("tx_hash")
+  releaseReason String?           @map("release_reason")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+  quote         Quote             @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+  agent         Agent             @relation(fields: [agentId], references: [id], onDelete: Restrict)
+
+  @@index([agentId, status, expiresAt])
+  @@map("reservations")
+}
+
+model Approval {
+  id         String         @id @default(cuid())
+  agentId    String         @map("agent_id")
+  providerId String         @map("provider_id")
+  quoteId    String         @unique @map("quote_id")
+  amount     BigInt
+  status     ApprovalStatus @default(pending)
+  expiresAt  DateTime       @map("expires_at")
+  createdAt  DateTime       @default(now()) @map("created_at")
+  resolvedAt DateTime?      @map("resolved_at")
+  agent      Agent          @relation(fields: [agentId], references: [id], onDelete: Restrict)
+  provider   Provider       @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  quote      Quote          @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+
+  @@index([agentId, status, expiresAt])
+  @@map("approvals")
+}
+
+model Verification {
+  id        String             @id @default(cuid())
+  quoteId   String             @unique @map("quote_id")
+  result    VerificationResult
+  reasons   Json
+  checkedAt DateTime           @default(now()) @map("checked_at")
+  quote     Quote              @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+
+  @@map("verifications")
+}
+
+model WebhookEndpoint {
+  id        String   @id @default(cuid())
+  orgId     String   @map("org_id")
+  url       String
+  secretEnc String   @map("secret_enc")
+  events    String[] @default([])
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  org       Org      @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  deliveries WebhookDelivery[]
+
+  @@index([orgId])
+  @@map("webhook_endpoints")
+}
+
+model WebhookDelivery {
+  id                String         @id @default(cuid())
+  webhookEndpointId String         @map("webhook_endpoint_id")
+  eventId           String         @map("event_id")
+  event             String
+  payload           Json
+  status            DeliveryStatus @default(pending)
+  attempts          Int            @default(0)
+  nextAttemptAt     DateTime       @default(now()) @map("next_attempt_at")
+  deliveredAt       DateTime?      @map("delivered_at")
+  lastError         String?        @map("last_error")
+  createdAt         DateTime       @default(now()) @map("created_at")
+  endpoint          WebhookEndpoint @relation(fields: [webhookEndpointId], references: [id], onDelete: Restrict)
+
+  @@unique([webhookEndpointId, eventId])
+  @@index([status, nextAttemptAt])
+  @@map("webhook_deliveries")
+}
+
+// Inbound Velo delivery de-duplication is separate from outbound webhooks.
+model WebhookEvent {
+  id          String    @id @default(cuid())
+  source      String
+  eventId     String    @map("event_id")
+  payload     Json
+  verified    Boolean   @default(false)
+  receivedAt  DateTime  @default(now()) @map("received_at")
+  processedAt DateTime? @map("processed_at")
+
+  @@unique([source, eventId])
+  @@map("webhook_events")
+}
+
+model ProviderSettings {
+  providerId         String   @id @map("provider_id")
+  autoClaimEnabled   Boolean  @default(false) @map("auto_claim_enabled")
+  autoClaimThreshold BigInt   @map("auto_claim_threshold")
+  provider           Provider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  @@map("provider_settings")
+}
+
+model AgentSettings {
+  agentId        String    @id @map("agent_id")
+  lowBudgetAlert BigInt    @map("low_budget_alert")
+  lastAlertAt    DateTime? @map("last_alert_at")
+  agent          Agent     @relation(fields: [agentId], references: [id], onDelete: Restrict)
+
+  @@map("agent_settings")
+}
+
+model Topup {
+  id                  String      @id @default(cuid())
+  agentId             String      @map("agent_id")
+  veloPaymentIntentId String      @unique @map("velo_payment_intent_id")
+  amount              BigInt
+  asset               String
+  status              TopupStatus @default(pending)
+  checkoutUrl         String?     @map("checkout_url")
+  receiverAddress     String?     @map("receiver_address")
+  paymentTxHash       String?     @unique @map("payment_tx_hash")
+  fundTxHash          String?     @unique @map("fund_tx_hash")
+  recovery            Json?
+  createdAt           DateTime    @default(now()) @map("created_at")
+  completedAt         DateTime?   @map("completed_at")
+  agent               Agent       @relation(fields: [agentId], references: [id], onDelete: Restrict)
+
+  @@index([agentId, status])
+  @@map("topups")
+}
+
+model Claim {
+  id          String      @id @default(cuid())
+  providerId  String      @map("provider_id")
+  amount      BigInt
+  asset       String
+  status      ClaimStatus @default(pending)
+  txHash      String?     @unique @map("tx_hash")
+  recovery    Json?
+  createdAt   DateTime    @default(now()) @map("created_at")
+  claimedAt   DateTime?   @map("claimed_at")
+  provider    Provider    @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  @@index([providerId, status])
+  @@map("claims")
+}

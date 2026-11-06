@@ -1,36 +1,54 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Settl.ai web app
 
-## Getting Started
+Next.js 16 host for Settl's provider/buyer interfaces and stage view. The same app is the planned host for the gateway REST API, hosted MCP server, and backend integrations.
 
-First, run the development server:
+The existing pages use demo data. The broker, REST routes, MCP transport, database, and live payment wiring are not implemented yet. All live interfaces remain in scope for the November 8 demo. See the [project README](../../README.md) and [progress report](../../docs/progress.md).
 
-```bash
+## Run from the repository root
+
+Use npm workspaces and a Node release supported by Noir SDK 0.3.0. Node 24.22.1 is the previously verified runtime.
+
+```sh
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Route | Current demo |
+|---|---|
+| `/` | Landing page. |
+| `/login` | Select provider or buyer; any password works for demo sign-in. |
+| `/provider` | Provider overview, with earnings and endpoints under the same prefix. |
+| `/buyer` | Buyer agent list, create/detail flows, and approval screen. |
+| `/stage` | Scripted presentation view. |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Demo accounts are `mara@example.com` (provider) and `juan@example.com` (buyer). Claim and top-up UI flows currently simulate state changes; they do not transfer funds.
 
-## Learn More
+## Configuration and checks
 
-To learn more about Next.js, take a look at the following resources:
+If absent, create `apps/web/.env.local` from the root `.env.example`. Preserve existing local values and never commit credentials. The [root setup guide](../../README.md#run-locally) explains which configuration is needed for each integration. Rendering the current demo pages does not require live Velo or database credentials.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Run the required repository check from the root:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```sh
+npm test && npm run typecheck && npm run lint && npm run build
+```
 
-## Deploy on Vercel
+For web-only debugging, also from the root:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```sh
+npm test -w web
+npm run typecheck -w web
+npm run lint -w web
+npm run build -w web
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Development references
+
+- [App agent instructions](AGENTS.md): read the installed Next.js docs before using an API; this project uses Next.js 16 conventions.
+- [Handoff](../../HANDOFF.md): current checkpoint and build order.
+- [API/MCP design](../../docs/superpowers/specs/2026-11-04-settl-api-mcp-design.md): current backend design.
+- [UI design](../../docs/superpowers/specs/2026-11-03-settl-ui-design.md): follow section 2 and the tokens in `app/globals.css`.
+
+Keep the full demo working as integrations are added: paid clean results, failed results without charge, cap rejection, human approval, top-up, and claim.

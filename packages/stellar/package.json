@@ -1,0 +1,24 @@
+{
+  "name": "@settl/stellar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "engines": { "node": "^22.23.4 || ^24.22.1 || >=26.12.1" },
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "test:testnet": "vitest run --config vitest.testnet.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@carts1024/velo-sdk": "alpha",
+    "@noirx402/agent-sdk": "0.3.0",
+    "@stellar/stellar-sdk": "17.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "vitest": "^3.2.7"
+  }
+}

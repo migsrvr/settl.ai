@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { Suspense } from "react";
 import { ApprovalCard } from "@/components/buyer/approval-card";
 
 const APPROVALS = ["geoph"];
@@ -12,9 +12,12 @@ export function generateStaticParams() {
 export const metadata: Metadata = { title: "Approval" };
 
 // Designed for a phone: the buyer gets this as a notification while the agent waits.
-export default async function ApprovalPage({ params }: PageProps<"/buyer/approvals/[id]">) {
+async function LiveApproval({ params }: Pick<PageProps<"/buyer/approvals/[id]">, "params">) {
   const { id } = await params;
-  if (!APPROVALS.includes(id)) notFound();
+  return <ApprovalCard approvalId={id} />;
+}
+
+export default function ApprovalPage({ params }: PageProps<"/buyer/approvals/[id]">) {
 
   return (
     <div className="mx-auto box-border flex min-h-dvh w-full max-w-[420px] flex-col gap-6 px-4 py-6">
@@ -31,7 +34,9 @@ export default async function ApprovalPage({ params }: PageProps<"/buyer/approva
         <span className="font-display text-lg font-bold tracking-[-0.02em]">Approval</span>
         <span className="ml-auto text-xs text-muted">Juan’s Accounting</span>
       </div>
-      <ApprovalCard />
+      <Suspense fallback={<p role="status" className="text-ink-2">Loading approval…</p>}>
+        <LiveApproval params={params} />
+      </Suspense>
     </div>
   );
 }

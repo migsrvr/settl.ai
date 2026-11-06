@@ -1,91 +1,27 @@
-import type { Metadata } from "next";
-import { AppShell } from "@/components/app-shell";
-import { CallsPanel } from "@/components/provider/calls-panel";
-import { Button, ButtonLink, PageHeader, Stat } from "@/components/ui";
-
-export const metadata: Metadata = { title: "Home" };
-
-function Sparkline({ points }: { points: string }) {
-  return (
-    <svg viewBox="0 0 120 24" width="100%" height="24" preserveAspectRatio="none" aria-hidden="true">
-      <polyline points={points} fill="none" stroke="var(--color-ink)" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-    </svg>
-  );
+import type { Metadata } from 'next';
+import { Suspense } from 'react';
+import { AppShell } from '@/components/app-shell';
+import { CallsPanel } from '@/components/provider/calls-panel';
+import { ButtonLink, PageHeader, Stat } from '@/components/ui';
+import { DashboardLoading, DashboardUnavailable } from '@/components/buyer/live-state';
+import { money, sum, today } from '@/components/buyer/live-money';
+import { loadProviderDashboard } from '@/lib/server/dashboard';
+export const metadata: Metadata = { title: 'Home' };
+function getFailures(calls: { time: string | Date; checks: { check: string; ok: boolean }[] }[]) {
+  const cutoff = Date.now() - 7 * 86_400_000;
+  const failures = new Map<string, number>();
+  calls.filter(c => new Date(c.time).getTime() >= cutoff).flatMap(c => c.checks).filter(c => !c.ok).forEach(c => failures.set(c.check, (failures.get(c.check) ?? 0) + 1));
+  return failures;
 }
-
-const FAILED = [
-  ["Confidence too low", 7],
-  ["Totals don’t add up", 3],
-  ["Missing a required field", 1],
-] as const;
-
-export default function ProviderHome() {
-  return (
-    <AppShell role="provider" active="/provider">
-      <PageHeader
-        title="Today"
-        actions={
-          <>
-            <Button>Send a test request</Button>
-            <ButtonLink href="/provider/endpoints" variant="primary">Add an endpoint</ButtonLink>
-          </>
-        }
-      />
-
-      <section aria-label="Today in numbers" className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-6 border-y border-rule py-6">
-        <div className="flex flex-col gap-1">
-          <Stat label="Earned" value="₱124.00" />
-          <Sparkline points="0,22 15,21 30,19 45,20 60,14 75,12 90,9 105,7 120,3" />
-        </div>
-        <div className="flex flex-col gap-1">
-          <Stat label="Paid calls" value="62" />
-          <Sparkline points="0,21 15,20 30,18 45,18 60,15 75,11 90,9 105,8 120,4" />
-        </div>
-        <Stat label="Not charged" value="6" note="Results that failed your checks" />
-        <Stat label="Pass rate" value="91.2%" note="62 of 68 results" />
-      </section>
-
-      <div className="flex flex-wrap items-start gap-10">
-        <section aria-labelledby="chart-title" className="flex min-w-0 flex-[999_1_480px] flex-col gap-4">
-          <div className="flex flex-wrap items-baseline justify-between gap-4">
-            <h2 id="chart-title" className="text-lg font-medium">Earnings so far today</h2>
-            <span className="text-xs text-muted">In pesos</span>
-          </div>
-          <svg viewBox="0 0 600 160" width="100%" height="160" preserveAspectRatio="none" role="img" aria-label="Earnings rise steadily from ₱0 at midnight to ₱124 by 10:45 AM">
-            {[40, 80, 120].map((y) => (
-              <line key={y} x1="0" y1={y} x2="600" y2={y} stroke="var(--color-rule)" />
-            ))}
-            <path d="M0,158 L60,156 L120,150 L180,141 L240,128 L300,111 L360,96 L420,75 L480,56 L540,38 L600,24 L600,160 L0,160 Z" fill="var(--color-saffron-well)" />
-            <polyline points="0,158 60,156 120,150 180,141 240,128 300,111 360,96 420,75 480,56 540,38 600,24" fill="none" stroke="var(--color-ink)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-          </svg>
-          <div className="flex justify-between text-xs text-muted">
-            <span>12 AM</span>
-            <span>3 AM</span>
-            <span>6 AM</span>
-            <span>9 AM</span>
-            <span>Now</span>
-          </div>
-        </section>
-
-        <div className="flex min-w-0 flex-[1_1_280px] flex-col gap-6">
-          <section aria-labelledby="pending-title" className="flex flex-col gap-2 rounded-xl border border-rule bg-surface p-6">
-            <h2 id="pending-title" className="text-xs font-normal text-muted">Waiting in escrow</h2>
-            <span className="text-2xl font-medium tracking-[-0.01em]">₱86.00</span>
-            <ButtonLink href="/provider/earnings" className="mt-2 self-start">Claim earnings</ButtonLink>
-          </section>
-          <section aria-labelledby="fail-title" className="flex flex-col">
-            <h2 id="fail-title" className="mb-2 text-sm font-medium">Most failed checks, last 7 days</h2>
-            {FAILED.map(([label, n], i) => (
-              <div key={label} className={`flex justify-between border-t border-rule py-2 ${i === FAILED.length - 1 ? "border-b" : ""}`}>
-                <span>{label}</span>
-                <span className="font-medium">{n}</span>
-              </div>
-            ))}
-          </section>
-        </div>
-      </div>
-
-      <CallsPanel />
-    </AppShell>
-  );
+async function LiveHome({ searchParams }: Pick<PageProps<'/provider'>, 'searchParams'>) {
+  const data = await loadProviderDashboard(); if (!data) return <DashboardUnavailable/>;
+  const calls = data.calls.filter(c => today(c.confirmedAt ?? c.time)); const paid = calls.filter(c => c.status === 'paid' && c.confirmedAt !== null); const checked = calls.filter(c => c.verification !== null); const passed = checked.filter(c => c.verification === 'pass');
+  const hourly = Array.from({ length: 24 }, (_, hour) => sum(paid.filter(c => new Date(c.confirmedAt ?? c.time).getUTCHours() <= hour).map(c => c.amountStroops)));
+  const maximum = BigInt(hourly[23]); const points = hourly.map((amount, hour) => `${hour * 600 / 23},${maximum > 0n ? 150 - Number(BigInt(amount) * 140n / maximum) : 150}`).join(' ');
+  const failures = getFailures(data.calls);
+  const query = (await searchParams).q;
+  const q = (typeof query === 'string' ? query : '').trim().slice(0, 200).toLowerCase();
+  if (q) data.calls = data.calls.filter(c => [c.id, c.agentId, c.agent, c.customer, c.provider, c.endpoint, c.txHash ?? ''].some(value => value.toLowerCase().includes(q)));
+  return <><section aria-label="Today in numbers (UTC)" className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-6 border-y border-rule py-6"><Stat label="Earned today (UTC)" value={money(sum(paid.map(c => c.amountStroops)), data.rateCents)}/><Stat label="Paid calls" value={String(paid.length)}/><Stat label="Not charged" value={String(calls.filter(c => c.status === 'not_charged').length)}/><Stat label="Verification pass rate" value={checked.length ? `${(passed.length * 100 / checked.length).toFixed(1)}%` : 'No checks yet'} note={`${passed.length} passed of ${checked.length} verified results`}/></section><div className="flex flex-wrap gap-10"><section className="min-w-0 flex-[999_1_480px]"><h2 className="mb-4 text-lg font-medium">Confirmed earnings today (UTC)</h2><svg viewBox="0 0 600 160" width="100%" height="160" role="img" aria-label={`Cumulative confirmed earnings today: ${money(hourly[23], data.rateCents)}`}><polyline points={points} fill="none" stroke="var(--color-ink)" strokeWidth="2"/></svg><div className="flex justify-between text-muted"><span>00:00 UTC</span><span>23:00 UTC</span></div></section><section className="flex min-w-0 flex-[1_1_280px] flex-col gap-3"><h2 className="text-lg font-medium">Waiting in escrow</h2><p className="text-2xl font-medium">{money(data.pending.amountStroops, data.rateCents)}</p><p>{data.pending.source === 'chain' ? 'Observed on Stellar testnet' : 'Chain balance unavailable'}</p><ButtonLink href="/provider/earnings">Claim earnings</ButtonLink></section></div><section><h2 className="mb-3 text-lg font-medium">Failed checks, last 7 days</h2>{failures.size === 0 ? <p>No failed checks recorded.</p> : [...failures].sort((a, b) => b[1] - a[1]).map(([check, count]) => <p key={check} className="flex justify-between border-b border-rule py-2"><span>{check}</span><span>{count}</span></p>)}</section><CallsPanel calls={data.calls} rateCents={data.rateCents}/></>;
 }
+export default function ProviderHome({ searchParams }: PageProps<'/provider'>) { return <AppShell role="provider" active="/provider"><PageHeader title="Today" actions={<ButtonLink href="/provider/endpoints" variant="primary">Manage endpoints</ButtonLink>}/><Suspense fallback={<DashboardLoading/>}><LiveHome searchParams={searchParams}/></Suspense></AppShell>; }
