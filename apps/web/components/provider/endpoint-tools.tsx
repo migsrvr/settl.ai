@@ -2,10 +2,10 @@
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui';
-import type { ProviderDashboard } from '@/lib/server/dashboard';
+import type { loadProviderEndpoints } from '@/lib/server/dashboard';
 import { checkoutUrl, phpToExactStroops } from '@/components/buyer/live-money';
 const field = 'min-h-10 rounded-md border border-edge bg-surface px-3';
-export function IntegrateSection({ endpoints }: { endpoints: ProviderDashboard['endpoints'] }) {
+export function IntegrateSection({ endpoints }: { endpoints: Omit<NonNullable<Awaited<ReturnType<typeof loadProviderEndpoints>>>['endpoints'][number], 'callsToday'>[] }) {
   const [selected, setSelected] = useState(endpoints[0]?.id ?? ''); const [message, setMessage] = useState(''); const endpoint = endpoints.find(e => e.id === selected) ?? endpoints[0];
   const code = endpoint ? `import { settl } from "@settl/sdk";\n\napp.${endpoint.method.toLowerCase()}(${JSON.stringify(endpoint.route)},\n  settl({ endpointId: ${JSON.stringify(endpoint.id)} }),\n  yourJsonHandler);` : '';
   async function copy() { try { await navigator.clipboard.writeText(code); setMessage('Code copied.'); } catch { setMessage('Copy failed. Select the code and copy it manually.'); } }

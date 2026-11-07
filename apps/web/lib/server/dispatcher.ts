@@ -8,6 +8,7 @@ import { planEffects } from "./events";
 import { isObject } from "./api-auth";
 import { decryptWalletSecret } from "./wallets";
 import { HEADER_DELIVERY, HEADER_SIGNATURE, signWebhook } from "./webhooks";
+import { createTimingTracker } from "./timing";
 
 export type DispatchParams = {
   eventId: string;
@@ -29,6 +30,9 @@ interface DispatcherOptions {
 // The Phase 8 brief requests three retries after the initial attempt.
 const MAX_ATTEMPTS = 4;
 const LEASE_MS = 60_000;
+const DELIVERY_CONCURRENCY = 4;
+const BATCH_SIZE = 25;
+type Subscription = { id: string; orgId: string; active: boolean; events: string[] };
 const EVENTS: SettlEvent[] = ["payment.paid", "payment.not_charged", "payment.blocked", "approval.requested", "approval.resolved", "budget.low", "topup.completed", "claim.completed"];
 const empty = (): DispatchSummary => ({ queued: 0, delivered: 0, failed: 0, pending: 0, claims: 0, errors: 0 });
 function dayStart(date: Date) { return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())); }
@@ -41,8 +45,8 @@ export function createDispatcher(options: DispatcherOptions) {
   const fetcher = options.fetch ?? globalThis.fetch;
   const claimProvider = options.claimProvider ?? defaultClaimProvider;
 
-  async function enqueue(store: Pick<Prisma.TransactionClient, "webhookEndpoint" | "webhookDelivery">, eventId: string, event: SettlEvent, payload: Prisma.InputJsonValue, orgId: string) {
-    const endpoints = await store.webhookEndpoint.findMany({ where: { orgId, active: true, events: { has: event } } });
+  async function enqueue(store: Pick<Prisma.TransactionClient, "webhookEndpoint" | "webhookDelivery">, eventId: string, event: SettlEvent, payload: Prisma.InputJsonValue, orgId: string, subscriptions?: Subscription[]) {
+    const endpoints = subscriptions ?? await store.webhookEndpoint.findMany({ where: { orgId, active: true, events: { has: event } }, select: { id: true, orgId: true, active: true, events: true } });
     let count = 0;
     for (const endpoint of endpoints) {
       // Recheck explicit predicates so injectable stores cannot broaden tenancy.
@@ -62,13 +66,11 @@ export function createDispatcher(options: DispatcherOptions) {
     // A process may have died during its final leased attempt. No fifth send.
     const exhausted = await db.webhookDelivery.updateMany({ where: { status: "pending", attempts: { gte: MAX_ATTEMPTS }, nextAttemptAt: { lte: at } }, data: { status: "failed", lastError: "delivery_attempts_exhausted" } });
     summary.failed += exhausted.count;
-    const deliveries = await db.webhookDelivery.findMany({ where: { status: "pending", attempts: { lt: MAX_ATTEMPTS }, nextAttemptAt: { lte: at } }, include: { endpoint: true }, orderBy: { nextAttemptAt: "asc" }, take: 25 });
-    for (const delivery of deliveries) {
-      // Keep each invocation bounded. All remaining rows stay due for cron.
-      if (now().getTime() - at.getTime() >= 20_000) break;
+    const deliveries = await db.webhookDelivery.findMany({ where: { status: "pending", attempts: { lt: MAX_ATTEMPTS }, nextAttemptAt: { lte: at } }, include: { endpoint: true }, orderBy: { nextAttemptAt: "asc" }, take: BATCH_SIZE });
+    async function deliver(delivery: (typeof deliveries)[number]) {
       const attempt = delivery.attempts + 1;
       const leased = await db.webhookDelivery.updateMany({ where: { id: delivery.id, status: "pending", attempts: delivery.attempts, nextAttemptAt: { lte: at } }, data: { attempts: { increment: 1 }, nextAttemptAt: new Date(now().getTime() + LEASE_MS) } });
-      if (!leased.count) continue;
+      if (!leased.count) return;
       let error = "delivery_failed";
       let delivered = false;
       const abort = new AbortController();
@@ -99,6 +101,18 @@ export function createDispatcher(options: DispatcherOptions) {
       else if (status === "failed") summary.failed++;
       else summary.pending++;
     }
+    let next = 0;
+    // Only third-party HTTP delivery overlaps. Financial effects stay serial.
+    // Each worker stops starting rows after 20s; an in-flight send has a 10s
+    // timeout, safely inside its 60s lease. Unstarted rows remain due for cron.
+    const workers = await Promise.allSettled(Array.from({ length: Math.min(DELIVERY_CONCURRENCY, deliveries.length) }, async () => {
+      while (next < deliveries.length && now().getTime() - at.getTime() < 20_000) {
+        const delivery = deliveries[next++];
+        await deliver(delivery);
+      }
+    }));
+    const failed = workers.find((worker) => worker.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
     return summary;
   }
 
@@ -118,7 +132,7 @@ export function createDispatcher(options: DispatcherOptions) {
     }, { timeout: 30_000 });
   }
 
-  async function performEffects(params: DispatchParams, deliver: boolean): Promise<DispatchSummary> {
+  async function performEffects(params: DispatchParams, deliver: boolean, subscriptions?: Subscription[]): Promise<DispatchSummary> {
     const summary = empty();
     // Reject BigInt, circular objects, and non-JSON values before persistence.
     try { JSON.parse(JSON.stringify(params.payload)); } catch { summary.errors++; return summary; }
@@ -133,7 +147,7 @@ export function createDispatcher(options: DispatcherOptions) {
           // owns that event, after checking live balance and the daily marker.
           if (effect.event === "budget.low" && params.event !== "budget.low") continue;
           if (effect.event !== params.event) continue;
-          summary.queued += await enqueue(db, params.eventId, params.event, params.payload, effect.orgId);
+          summary.queued += await enqueue(db, params.eventId, params.event, params.payload, effect.orgId, subscriptions);
         } else if (effect.kind === "budget_low") summary.queued += await lowBudget(effect.agentId);
         else {
           const result = await claimProvider(effect.providerId);
@@ -152,27 +166,42 @@ export function createDispatcher(options: DispatcherOptions) {
 
   async function flushAutomationEvents(eventId?: string): Promise<{ processed: number; errors: number }> {
     const summary = { processed: 0, errors: 0 };
-    const intents = await db.webhookEvent.findMany({ where: { source: "settl", verified: true, processedAt: null, ...(eventId ? { eventId } : {}) }, orderBy: { receivedAt: "asc" }, take: 25 });
+    const intents = await db.webhookEvent.findMany({ where: { source: "settl", verified: true, processedAt: null, ...(eventId ? { eventId } : {}) }, orderBy: { receivedAt: "asc" }, take: BATCH_SIZE });
+    const valid = [];
     for (const intent of intents) {
+      const data = intent.payload;
+      if (!isObject(data) || data.eventId !== intent.eventId || typeof data.event !== "string" || !EVENTS.includes(data.event as SettlEvent)
+        || !Array.isArray(data.orgIds) || !data.orgIds.every((id) => typeof id === "string" && id.length > 0)
+        || data.payload === undefined || data.payload === null
+        || data.agentId !== undefined && typeof data.agentId !== "string"
+        || data.providerId !== undefined && typeof data.providerId !== "string") {
+        summary.errors++; continue;
+      }
+      valid.push({ intent, data });
+    }
+    if (!valid.length) return summary;
+    // One invocation-scoped snapshot for ordinary webhook enqueue only. Live
+    // budget checks retain their own transaction and fresh subscription read.
+    const batchOrgIds = [...new Set(valid.flatMap(({ data }) => data.orgIds as string[]))];
+    let subscriptions: Subscription[];
+    try {
+      subscriptions = batchOrgIds.length ? await db.webhookEndpoint.findMany({ where: { orgId: { in: batchOrgIds }, active: true }, select: { id: true, orgId: true, active: true, events: true } }) : [];
+    } catch {
+      summary.errors += valid.length;
+      return summary;
+    }
+    for (const { intent, data } of valid) {
       try {
-        const data = intent.payload;
-        if (!isObject(data) || data.eventId !== intent.eventId || typeof data.event !== "string" || !EVENTS.includes(data.event as SettlEvent)
-          || !Array.isArray(data.orgIds) || !data.orgIds.every((id) => typeof id === "string" && id.length > 0)
-          || data.payload === undefined || data.payload === null
-          || data.agentId !== undefined && typeof data.agentId !== "string"
-          || data.providerId !== undefined && typeof data.providerId !== "string") {
-          summary.errors++; continue;
-        }
         const event = data.event as SettlEvent;
         const orgIds = data.orgIds as string[];
-        const subscriptions = await db.webhookEndpoint.findMany({ where: { orgId: { in: orgIds }, active: true }, select: { orgId: true, events: true } });
-        const effects = planEffects({ type: event }, { subscriptions: subscriptions.filter((subscription) => orgIds.includes(subscription.orgId)) });
+        const scoped = subscriptions.filter((subscription) => subscription.active && orgIds.includes(subscription.orgId));
+        const effects = planEffects({ type: event }, { subscriptions: scoped });
         if (event === "payment.paid") {
           // These services enforce their own live settings/threshold checks.
           if (typeof data.providerId === "string") effects.push({ kind: "auto_claim", providerId: data.providerId });
           if (typeof data.agentId === "string") effects.push({ kind: "budget_low", agentId: data.agentId });
         }
-        const result = await performEffects({ eventId: intent.eventId, event, payload: data.payload as Prisma.InputJsonValue, effects }, false);
+        const result = await performEffects({ eventId: intent.eventId, event, payload: data.payload as Prisma.InputJsonValue, effects }, false, scoped);
         if (result.errors) { summary.errors++; continue; }
         const updated = await db.webhookEvent.updateMany({ where: { id: intent.id, source: "settl", verified: true, processedAt: null }, data: { processedAt: now() } });
         summary.processed += updated.count;
@@ -182,7 +211,15 @@ export function createDispatcher(options: DispatcherOptions) {
     // intents without waiting for any third-party HTTP requests.
     return summary;
   }
-  return { dispatchEffects, flushDueDeliveries, flushAutomationEvents };
+  async function timed<T>(operation: string, run: () => Promise<T>): Promise<T> {
+    const tracker = createTimingTracker(operation);
+    try { const result = await tracker.measure('post_payment', run); tracker.finish('completed'); return result; }
+    catch (error) { tracker.finish('failed'); throw error; }
+  }
+  return { dispatchEffects,
+    flushDueDeliveries: () => timed('background.deliveries', flushDueDeliveries),
+    flushAutomationEvents: (eventId?: string) => timed('background.automations', () => flushAutomationEvents(eventId)),
+  };
 }
 
 let singleton: ReturnType<typeof createDispatcher> | undefined;

@@ -37,6 +37,7 @@ export function createAgentService(options: Options) {
     return owner;
   }
   async function knownProviders(tx: Prisma.TransactionClient, policy: Policy) {
+    if (!policy.allowlist.length) return;
     const rows = await tx.provider.findMany({ where: { id: { in: policy.allowlist } }, select: { id: true } });
     if (rows.length !== policy.allowlist.length) throw new ApiError(400, "unknown_provider");
   }

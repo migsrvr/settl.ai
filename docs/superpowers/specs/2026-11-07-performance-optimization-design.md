@@ -1,7 +1,8 @@
 # Settl.ai System Performance Optimization Design
 
 - **Date:** 2026-11-07
-- **Status:** Approved
+- **Status:** Implemented locally; hosted rollout pending
+- **Scope revision, Nov 7:** User confirmed website loading and supporting background processing only. MCP tool contracts/handlers and the broker settlement/response path are unchanged.
 - **Parent specs:** [`2026-11-04-settl-api-mcp-design.md`](2026-11-04-settl-api-mcp-design.md), [`2026-11-03-settl-ui-design.md`](2026-11-03-settl-ui-design.md)
 
 ## 1. Objectives & Constraints
@@ -72,12 +73,12 @@ Optimize the entire Settl.ai provider and buyer experience—page rendering, dat
 - When `amountStroops === null` and a background check is in progress, display `"Checking balance…"` (never an invented zero). When `asOf` is present, display the observation timestamp (`Observed as of …` / `Last verified …`).
 
 ### 3.3 Authenticated Balance Refresh Endpoints (`apps/web/lib/server/balances.ts`)
-- **`GET /api/agents/[id]/balance` & `POST /api/agents/[id]/balance`**:
+- **`GET /api/agents/[id]/balance`**:
   - Requires buyer session (`requireBuyerOrg`), verifies agent belongs to `orgId`.
   - If `balanceUpdatedAt` is within **15 seconds** (`15_000ms`) of `now()` and `cachedBalance !== null`, immediately returns `{ amountStroops: cachedBalance.toString(), source: 'cache', asOf: balanceUpdatedAt.toISOString() }` without hitting Stellar RPC.
-  - Otherwise, deduplicates concurrent in-flight `balanceOf(deviceHash)` reads in-memory, bounds the RPC wait to 8 seconds, updates `cachedBalance` and `balanceUpdatedAt` in Postgres on success, and returns `{ amountStroops, source: 'chain', asOf }`.
+  - Otherwise, deduplicates concurrent in-flight `balanceOf(deviceHash)` reads in-memory, bounds the RPC wait to 8 seconds, updates `cachedBalance` and `balanceUpdatedAt` in Postgres on success using the read-start timestamp and a guard against overwriting newer observations, and returns `{ amountStroops, source: 'chain', asOf }`.
   - On RPC failure/timeout, retains the previous `cachedBalance` and `balanceUpdatedAt` and returns `{ amountStroops: cachedBalance?.toString() ?? null, source: cachedBalance != null ? 'cache' : 'unavailable', asOf: balanceUpdatedAt?.toISOString() ?? null }`.
-- **`GET /api/provider/balance` & `POST /api/provider/balance`**:
+- **`GET /api/provider/balance`**:
   - Requires provider session (`requireProviderOrg`), resolves the provider for `orgId`.
   - Applies the same 15-second freshness window, concurrent in-flight deduplication per `merchantWallet`, bounded RPC wait, database snapshot persistence (`cachedPendingBalance`, `pendingBalanceUpdatedAt`), and fallback retention on failure.
 - Responses always set `Cache-Control: private, no-store`.
@@ -85,7 +86,7 @@ Optimize the entire Settl.ai provider and buyer experience—page rendering, dat
 
 ---
 
-## 4. Phase 3: Broker Post-Payment Optimization & Interaction Feedback
+## 4. Phase 3: Existing Background Processing & Interaction Feedback
 
 ### 4.1 Remove Duplicate Post-Payment Chain Observations (`apps/web/lib/server/broker.ts`)
 - In `broker.ts`, `enqueueEvent` already commits the durable `WebhookEvent` outbox record (`source: "settl"`, `event: "payment.paid"`) inside the payment confirmation transaction.

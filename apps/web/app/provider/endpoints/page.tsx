@@ -4,11 +4,11 @@ import { AppShell } from '@/components/app-shell';
 import { AddRouteForm, IntegrateSection } from '@/components/provider/endpoint-tools';
 import { PageHeader } from '@/components/ui';
 import { DashboardLoading, DashboardUnavailable } from '@/components/buyer/live-state';
-import { money, today } from '@/components/buyer/live-money';
-import { loadProviderDashboard } from '@/lib/server/dashboard';
+import { money } from '@/components/buyer/live-money';
+import { loadProviderEndpoints } from '@/lib/server/dashboard';
 export const metadata: Metadata = { title: 'Endpoints' };
 async function LiveEndpoints() {
-  const data = await loadProviderDashboard();
+  const data = await loadProviderEndpoints();
   if (!data) return <DashboardUnavailable/>;
   return <div className="flex flex-wrap items-start gap-10">
     <div className="flex min-w-0 flex-[999_1_520px] flex-col gap-10">
@@ -20,7 +20,7 @@ async function LiveEndpoints() {
             <td className="border-b border-rule py-4 pr-4">{money(e.price, data.rateCents)}</td>
             <td className="border-b border-rule py-4 pr-4">{e.mode === 'outcome' ? 'On a passing result' : 'On every call'}</td>
             <td className="border-b border-rule py-4 pr-4">{e.active ? 'Active' : 'Inactive'}</td>
-            <td className="border-b border-rule py-4">{data.calls.filter(c => c.endpointId === e.id && today(c.time)).length}</td>
+            <td className="border-b border-rule py-4">{e.callsToday}</td>
           </tr>)}</tbody>
         </table></div>
         {data.endpoints.length === 0 && <p className="py-4">No priced routes yet.</p>}

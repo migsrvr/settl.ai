@@ -53,7 +53,17 @@ The provider does not need database, encryption, wallet, or Velo secrets. Codex 
 
 Choose public callback access for this testnet submission deliberately. Deployment protection must not intercept Velo, authenticated MCP clients or the provider-to-Settl verification callback. Keep application bearer and webhook-signature verification enabled. Do not disable those checks to resolve a hosting login page.
 
-The automation endpoint currently accepts POST at `/api/cron/auto-claim`. A default Vercel cron GET cannot invoke it as-is. No recurring job is provisioned by this configuration.
+The automation endpoint accepts **GET and POST `/api/cron/auto-claim`** with the same `Authorization: Bearer <CRON_SECRET>` check and uncached response. Missing configuration returns 503; missing or invalid credentials return 401 before any queue work. GET supports [Vercel Cron's authenticated invocation](https://vercel.com/docs/cron-jobs/manage-cron-jobs); existing external POST jobs remain compatible.
+
+**No recurring job is provisioned or verified.** `apps/web/vercel.json` contains no `crons` entry, and the deployed team's tier has not been verified. [Vercel's cron limits](https://vercel.com/docs/cron-jobs/usage-and-pricing) allow daily jobs on Hobby and minute intervals on Pro/Enterprise. Do not add a minute schedule until the deployment tier is confirmed to support it. A daily safety-net claim job does not provide prompt outbox delivery or webhook retries.
+
+Until a supported hosting schedule is provisioned, configure an external recurring job against the production origin with:
+
+- Frequency: every minute (`* * * * *`), using POST (or the compatible GET), no request body, and the bearer value stored in the scheduler's secret store matching the deployed `CRON_SECRET`.
+- Execution: avoid overlapping scheduled runs, allow up to the configured 300-second function duration, and alert on non-2xx or missed invocations. A 500 can indicate partial queue failure or unresolved funding; inspect the safe error code and existing recovery procedure rather than forcing a financial retry.
+- Verification: after deployment and deliberate authorization to run this payment-affecting endpoint, confirm a real scheduled invocation's status and sanitized queue summary. An unauthorized probe or source configuration alone does not establish a working schedule. Record the scheduler identity and last successful run in the project handoff.
+
+Each invocation reads at most 25 automation intents and 25 due deliveries. Ordinary webhook subscriptions are read once per outbox batch; live low-budget checks retain their transaction-scoped lookup. Delivery uses at most four concurrent HTTP sends per invocation, stops starting rows after 20 seconds, and retains the 10-second send timeout, 60-second CAS lease, stable delivery IDs and four-total-attempt retry limit. Subsequent scheduled runs drain remaining rows and backoff deadlines. Claims and low-budget financial effects remain sequential within the outbox; this change does not increase financial concurrency.
 
 ## Diagnose a webhook HTTP 400
 

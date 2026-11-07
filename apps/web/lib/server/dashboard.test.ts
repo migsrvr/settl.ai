@@ -1,13 +1,13 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ cookie: 'buyer', connection: vi.fn(), org: vi.fn(), agents: vi.fn(), payments: vi.fn(), approvals: vi.fn(), providers: vi.fn(), provider: vi.fn(), balance: vi.fn(), pending: vi.fn() }));
+const mocks = vi.hoisted(() => ({ cookie: 'buyer', connection: vi.fn(), org: vi.fn(), agents: vi.fn(), payments: vi.fn(), approvals: vi.fn(), providers: vi.fn(), provider: vi.fn(), balance: vi.fn(), pending: vi.fn(), summary: vi.fn(), aggregate: vi.fn(), count: vi.fn(), groups: vi.fn() }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => ({ value: mocks.cookie }) }) }));
 vi.mock('next/server', () => ({ connection: mocks.connection }));
-vi.mock('./db', () => ({ getDb: () => ({ org: { findUnique: mocks.org }, agent: { findMany: mocks.agents }, payment: { findMany: mocks.payments }, approval: { findMany: mocks.approvals }, provider: { findMany: mocks.providers, findUnique: mocks.provider } }) }));
+vi.mock('./db', () => ({ getDb: () => ({ org: { findUnique: mocks.org }, agent: { findMany: mocks.agents }, payment: { findMany: mocks.payments }, quote: { aggregate: mocks.aggregate, groupBy: mocks.groups }, claim: { count: mocks.count }, $queryRaw: mocks.summary, approval: { findMany: mocks.approvals }, provider: { findMany: mocks.providers, findUnique: mocks.provider } }) }));
 vi.mock('@settl/stellar', () => ({ loadStellarConfig: () => ({}), createStellarClient: () => ({ balanceOf: mocks.balance, pendingBalance: mocks.pending }) }));
-import { loadBuyerDashboard, loadProviderDashboard } from './dashboard';
+import { loadBuyerDashboard, loadProviderDashboard, loadNewAgentForm, loadProviderEndpoints, loadBuyerAgentDetail, loadProviderEarnings, loadCallHistory } from './dashboard';
 describe('live dashboard ownership and safe DTOs', () => {
-  beforeEach(() => { vi.clearAllMocks(); mocks.cookie = 'buyer'; mocks.org.mockResolvedValue({ id: 'juan', role: 'buyer', name: 'Juan', walletPublic: 'GJUAN' }); mocks.agents.mockResolvedValue([]); mocks.payments.mockResolvedValue([]); mocks.approvals.mockResolvedValue([]); mocks.providers.mockResolvedValue([]); });
+  beforeEach(() => { vi.clearAllMocks(); mocks.cookie = 'buyer'; mocks.org.mockResolvedValue({ id: 'juan', role: 'buyer', name: 'Juan', walletPublic: 'GJUAN' }); mocks.agents.mockResolvedValue([]); mocks.payments.mockResolvedValue([]); mocks.approvals.mockResolvedValue([]); mocks.providers.mockResolvedValue([]); mocks.summary.mockResolvedValue([]); mocks.aggregate.mockResolvedValue({ _sum: { amount: null } }); mocks.groups.mockResolvedValue([]); mocks.count.mockResolvedValue(0); });
   it.each(['buyer', 'provider'] as const)('waits for a request before reading %s dashboard data or the current time', async (role) => {
     mocks.cookie = role;
     let allowRequest!: () => void;
@@ -43,15 +43,15 @@ describe('live dashboard ownership and safe DTOs', () => {
     mocks.agents.mockResolvedValue([{ id: 'owned', name: 'Agent', status: 'active', agentPublic: 'GAGENT', deviceHash: 'hash', policy: null, topups: [], reservations: [], agentSecretEnc: 'SECRET', apiKeys: [{ keyHash: 'HASH' }] }]); mocks.balance.mockRejectedValue(new Error('chain down'));
     const data = await loadBuyerDashboard(); expect(data?.agents[0].balance.amountStroops).toBeNull(); expect(JSON.stringify(data)).not.toMatch(/SECRET|keyHash|agentSecretEnc/);
   });
-  it('uses a dated cache only when the fresh chain read fails', async () => {
+  it('renders a dated snapshot without waiting for chain reads', async () => {
     mocks.agents.mockResolvedValue([{ id: 'owned', name: 'Agent', status: 'active', agentPublic: 'GAGENT', deviceHash: 'hash', policy: null, topups: [], reservations: [], cachedBalance: 99n, balanceUpdatedAt: new Date('2026-11-05T12:00:00Z') }]); mocks.balance.mockRejectedValue(new Error('chain down'));
     expect((await loadBuyerDashboard())?.agents[0].balance).toEqual({ amountStroops: '99', source: 'cache', asOf: '2026-11-05T12:00:00.000Z' });
-    mocks.balance.mockResolvedValue(123n); expect((await loadBuyerDashboard())?.agents[0].balance).toMatchObject({ amountStroops: '123', source: 'chain' });
+    mocks.balance.mockResolvedValue(123n); expect((await loadBuyerDashboard())?.agents[0].balance).toMatchObject({ amountStroops: '99', source: 'cache' }); expect(mocks.balance).not.toHaveBeenCalled();
   });
-  it('scopes provider earnings to owned endpoints and reads the actual merchant balance', async () => {
+  it('scopes provider earnings without blocking on a balance read', async () => {
     mocks.cookie = 'provider'; mocks.org.mockResolvedValue({ id: 'mara', role: 'provider', name: 'Mara', walletPublic: 'GMARA' }); mocks.provider.mockResolvedValue({ id: 'resibo', displayName: 'Resibo', merchantWallet: 'GMERCHANT', endpoints: [], claims: [], settings: null }); mocks.pending.mockResolvedValue(42n);
     mocks.payments.mockResolvedValue([{ id: 'call', status: 'not_charged', submittedAt: new Date('2026-11-06T00:00:00Z'), confirmedAt: null, txHash: null, quote: { amount: 10n, agentId: 'agent', agent: { name: 'Agent', org: { name: 'Customer' } }, endpoint: { route: '/ocr', provider: { displayName: 'Resibo' } }, verification: { result: 'fail', reasons: [{ check: 'confidence', ok: false, note: 'Too low' }] } } }]);
-    const data = await loadProviderDashboard(); expect(data?.pending.amountStroops).toBe('42'); expect(mocks.pending).toHaveBeenCalledWith('GMERCHANT'); expect(mocks.payments).toHaveBeenCalledWith(expect.objectContaining({ where: { quote: { endpoint: { provider: { orgId: 'mara' } } } } })); expect(data?.calls[0]).toMatchObject({ amountStroops: '0', quotedStroops: '10', verification: 'fail', checks: [{ check: 'confidence', ok: false, note: 'Too low' }] }); expect(() => JSON.stringify(data)).not.toThrow();
+    const data = await loadProviderDashboard(); expect(data?.pending.amountStroops).toBeNull(); expect(mocks.pending).not.toHaveBeenCalled(); expect(mocks.payments).toHaveBeenCalledWith(expect.objectContaining({ where: { quote: { endpoint: { provider: { orgId: 'mara' } } } } })); expect(data?.calls[0]).toMatchObject({ amountStroops: '0', quotedStroops: '10', verification: 'fail', checks: [{ check: 'confidence', ok: false, note: 'Too low' }] }); expect(() => JSON.stringify(data)).not.toThrow();
   });
   it('loads Acme independently of Juan and scopes its agents, payments and approvals', async () => {
     mocks.cookie = 'acme@example.com';
@@ -71,7 +71,7 @@ describe('live dashboard ownership and safe DTOs', () => {
     expect(mocks.org).toHaveBeenCalledWith(expect.objectContaining({ where: { email: 'geoph@example.com' } }));
     expect(mocks.provider).toHaveBeenCalledWith(expect.objectContaining({ where: { orgId: 'org_geoph' } }));
     expect(mocks.payments).toHaveBeenCalledWith(expect.objectContaining({ where: { quote: { endpoint: { provider: { orgId: 'org_geoph' } } } } }));
-    expect(mocks.pending).toHaveBeenCalledWith('GGEOPH');
+    expect(mocks.pending).not.toHaveBeenCalled();
   });
   it('rejects cross-role email sessions before reading organization data', async () => {
     mocks.cookie = 'geoph@example.com';
@@ -90,4 +90,42 @@ describe('live dashboard ownership and safe DTOs', () => {
     expect(await loadBuyerDashboard()).toMatchObject({ orgName: 'Custom' });
     expect(mocks.agents).toHaveBeenCalledWith(expect.objectContaining({ where: { orgId: 'org_custom' } }));
   });
+});
+
+describe('focused loading and bounded history', () => {
+ it('keeps the pending-claim guard independent of the visible claim page', async () => {
+   vi.clearAllMocks(); mocks.cookie = 'provider'; mocks.org.mockResolvedValue({ id: 'mara', role: 'provider', name: 'Mara' });
+   mocks.provider.mockResolvedValue({ id: 'resibo', merchantWallet: 'GM', settings: null, claims: [] }); mocks.count.mockResolvedValue(1); mocks.summary.mockResolvedValue([]);
+   const data = await loadProviderEarnings(); expect(data?.hasPendingClaim).toBe(true); expect(data?.claims).toEqual([]);
+   expect(mocks.count).toHaveBeenCalledWith({ where: { providerId: 'resibo', status: 'pending' } });
+ });
+ it('uses stable timestamp/id keysets without trusting cursor ownership', async () => {
+   mocks.payments.mockResolvedValue([]);
+   const cursor = Buffer.from(JSON.stringify({ id: 'other-tenant-row', at: '2026-11-06T00:00:00Z' })).toString('base64url');
+   await loadCallHistory('owned-org', 'buyer', { cursor });
+   expect(mocks.payments).toHaveBeenLastCalledWith(expect.objectContaining({ take: 26, where: { quote: { agent: { orgId: 'owned-org' } }, OR: [{ submittedAt: { lt: new Date('2026-11-06T00:00:00Z') } }, { submittedAt: new Date('2026-11-06T00:00:00Z'), id: { lt: 'other-tenant-row' } }] } }));
+ });
+ it('new agent form reads no agents, payments or chain', async () => {
+   vi.clearAllMocks(); mocks.cookie = 'buyer'; mocks.org.mockResolvedValue({ id: 'juan', role: 'buyer' });
+   expect(await loadNewAgentForm()).toMatchObject({ providers: [] });
+   expect(mocks.agents).not.toHaveBeenCalled(); expect(mocks.payments).not.toHaveBeenCalled(); expect(mocks.balance).not.toHaveBeenCalled();
+ });
+ it('endpoint management reads counts rather than payment history', async () => {
+   vi.clearAllMocks(); mocks.cookie = 'provider'; mocks.org.mockResolvedValue({ id: 'mara', role: 'provider' });
+   mocks.provider.mockResolvedValue({ id: 'resibo', endpoints: [], claims: [], settings: null });
+   expect(await loadProviderEndpoints()).toMatchObject({ endpoints: [] });
+   expect(mocks.payments).not.toHaveBeenCalled(); expect(mocks.pending).not.toHaveBeenCalled();
+ });
+ it('details select only an owned agent and bound top-ups', async () => {
+   vi.clearAllMocks(); mocks.cookie = 'buyer'; mocks.org.mockResolvedValue({ id: 'juan', role: 'buyer' }); mocks.agents.mockResolvedValue([]);
+   await loadBuyerAgentDetail('selected');
+   expect(mocks.agents).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'selected', orgId: 'juan' }, select: expect.objectContaining({ topups: expect.objectContaining({ take: 26 }) }) }));
+   expect(mocks.payments).toHaveBeenCalledWith(expect.objectContaining({ take: 26, where: { quote: { agent: { orgId: 'juan' }, agentId: 'selected' } } }));
+ });
+ it('bounds history but keeps complete aggregate totals', async () => {
+   mocks.cookie = 'buyer'; mocks.org.mockResolvedValue({ id: 'juan', role: 'buyer' }); mocks.agents.mockResolvedValue([]);
+   mocks.summary.mockResolvedValue([{ agentId: 'a', status: 'paid', verification: null, hour: 0, amount: '900', count: 90 }]);
+   expect((await loadBuyerDashboard())?.stats).toMatchObject({ spentToday: '900', paidCalls: 90 });
+   expect(mocks.payments).toHaveBeenCalledWith(expect.objectContaining({ take: 26, orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }] }));
+ });
 });

@@ -1,5 +1,24 @@
 # Database setup
 
+### Performance snapshot upgrade (prepared, not applied)
+
+Before deploying the dashboard performance changes to an existing database, review
+`apps/web/prisma/performance-upgrade.sql` against the intended database. It adds
+nullable provider snapshot columns and history indexes idempotently; it does not
+backfill balances, rewrite payments, or contact Stellar. No migration history is
+checked into this repository, so do not run `migrate deploy` assuming this standalone
+upgrade is a baseline migration. With database-write authorization and the intended
+environment selected, run from the repository root:
+
+```sh
+npm exec -w web -- prisma db execute --file prisma/performance-upgrade.sql
+```
+
+This upgrade has not been applied to Neon during local performance implementation.
+Apply it before deploying dependent application code. Repeated application is a
+no-op for existing columns/indexes. Snapshots remain unknown until a successful
+read; financial operations continue using their existing authoritative checks.
+
 Prisma 7 uses PostgreSQL through `@prisma/adapter-pg`. Configuration loads
 `apps/web/.env.local` with Next.js's environment loader. Run from the repo root:
 

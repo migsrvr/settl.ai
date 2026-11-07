@@ -30,7 +30,9 @@ describe("buyer agent lifecycle", () => {
     const s = setup(); const result = await s.createAgent("buyer", { ...policy, name: "Bookkeeper 2" });
     expect(result.status).toBe("active"); expect(result.apiKey).toMatch(/^stl_agent_/);
     expect(s.chain.registerDevice).toHaveBeenCalledOnce(); expect(s.chain.registerAgent).toHaveBeenCalledOnce();
-    expect(s.agent()).toMatchObject({ status: "active", agentSecretEnc: "encrypted-agent", cachedBalance: 0n, balanceUpdatedAt: NOW });
+    expect(s.agent()).toMatchObject({ status: "active", agentSecretEnc: "encrypted-agent" });
+    // Registration is not a ledger balance observation; the dashboard checks it separately.
+    expect(s.agent()?.cachedBalance).toBeUndefined(); expect(s.agent()?.balanceUpdatedAt).toBeUndefined();
     expect(JSON.stringify(s.tx.agentApiKey.create.mock.calls)).not.toContain(result.apiKey!);
   });
   it("skips provider table lookup when allowlist is empty", async () => {

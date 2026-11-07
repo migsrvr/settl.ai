@@ -4,6 +4,11 @@ import { autoClaimProviders } from "@/lib/server/claims";
 import { flushAutomationEvents, flushDueDeliveries } from "@/lib/server/dispatcher";
 import { processPaidTopups } from "@/lib/server/velo";
 
+// Vercel Cron invokes GET; external POST schedulers retain the same handler.
+export async function GET(request: Request): Promise<Response> {
+  return POST(request);
+}
+
 export async function POST(request: Request): Promise<Response> {
   try {
     const secret = process.env.CRON_SECRET;

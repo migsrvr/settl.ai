@@ -29,7 +29,7 @@ describe("account-specific demo sign-in and switching", () => {
   it("loads custom demo organizations with a public projection and a stored role", async () => {
     mocks.org.mockResolvedValue({ email: "custom@example.com", role: "provider", name: "Custom Maps", contactName: "Sam Demo" });
     await expect(signIn({}, form(" Custom@example.com "))).rejects.toThrow("redirect:/provider");
-    expect(mocks.org).toHaveBeenCalledWith({ where: { email: "custom@example.com" }, select: { email: true, role: true, name: true, contactName: true } });
+    expect(mocks.org).toHaveBeenCalledWith({ where: { email: "custom@example.com" }, select: { id: true, email: true, role: true, name: true, contactName: true, walletPublic: true } });
     expect(mocks.set).toHaveBeenCalledWith("settl_demo", "provider:custom@example.com", expect.any(Object));
   });
   it("rejects unknown accounts, missing passwords and unavailable account lookup without a session write", async () => {

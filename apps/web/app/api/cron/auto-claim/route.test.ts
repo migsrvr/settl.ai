@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { POST } from "./route";
+import { GET, POST } from "./route";
 const { claims, intents, deliveries, topups } = vi.hoisted(() => ({ claims: vi.fn(), intents: vi.fn(), deliveries: vi.fn(), topups: vi.fn() }));
 vi.mock("@/lib/server/velo", () => ({ processPaidTopups: topups }));
 vi.mock("@/lib/server/claims", () => ({ autoClaimProviders: claims }));
@@ -9,6 +9,17 @@ const request = (token = "cron-secret") => new Request("https://settl.test/api/c
 beforeEach(() => { vi.resetAllMocks(); vi.stubEnv("CRON_SECRET", "cron-secret"); claims.mockResolvedValue({ completed: 1 }); intents.mockResolvedValue({ processed: 2, errors: 0 }); deliveries.mockResolvedValue({ delivered: 2 }); topups.mockResolvedValue({ processed: 1, completed: 1, failed: 0, pending: 0, blocked: false }); });
 afterEach(() => vi.unstubAllEnvs());
 describe("protected automation cron", () => {
+  it("supports scheduler GET with identical authentication and uncached processing", async () => {
+    const get = (token?: string) => new Request("https://settl.test/api/cron/auto-claim", { headers: token ? { authorization: `Bearer ${token}` } : {} });
+    expect((await GET(get())).status).toBe(401);
+    expect((await GET(get("bad"))).status).toBe(401);
+    expect(intents).not.toHaveBeenCalled();
+    vi.stubEnv("CRON_SECRET", ""); expect((await GET(get("cron-secret"))).status).toBe(503);
+    vi.stubEnv("CRON_SECRET", "cron-secret");
+    const response = await GET(get("cron-secret"));
+    expect(response.status).toBe(200); expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(intents).toHaveBeenCalledOnce(); expect(deliveries).toHaveBeenCalledOnce(); expect(claims).toHaveBeenCalledOnce(); expect(topups).toHaveBeenCalledOnce();
+  });
   it("fails closed when unconfigured and rejects bad bearer credentials", async () => {
     vi.stubEnv("CRON_SECRET", ""); expect((await POST(request())).status).toBe(503);
     vi.stubEnv("CRON_SECRET", "cron-secret"); expect((await POST(request("bad"))).status).toBe(401);

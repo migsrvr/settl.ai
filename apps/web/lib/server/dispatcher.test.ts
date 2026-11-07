@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "../generated/prisma/client";
 import { createDispatcher } from "./dispatcher";
 import { verifyWebhook } from "./webhooks";
+import * as timing from "./timing";
 
 function setup() {
   let clock = new Date("2026-11-05T12:00:00Z");
@@ -22,7 +23,7 @@ function setup() {
         count++; Object.assign(r, data, typeof data.attempts === "object" ? { attempts: r.attempts + 1 } : {});
       } return { count };
     }),
-  }, webhookEvent: { findMany: vi.fn(async () => intents.filter((row) => !row.processedAt)), updateMany: vi.fn(async ({ data }: { data: object }) => { Object.assign(intents[0], data); return { count: 1 }; }) }, agent: { findUnique: vi.fn().mockImplementation(async () => ({ id: "a", orgId: "buyer", deviceHash: "device", settings })) }, agentSettings: { update: vi.fn(async ({ data }: { data: object }) => Object.assign(settings, data)) } };
+  }, webhookEvent: { findMany: vi.fn(async () => intents.filter((row) => !row.processedAt)), updateMany: vi.fn(async ({ where, data }: { where: { id: string }; data: object }) => { const intent = intents.find((row) => row.id === where.id && !row.processedAt); if (!intent) return { count: 0 }; Object.assign(intent, data); return { count: 1 }; }) }, agent: { findUnique: vi.fn().mockImplementation(async () => ({ id: "a", orgId: "buyer", deviceHash: "device", settings })) }, agentSettings: { update: vi.fn(async ({ data }: { data: object }) => Object.assign(settings, data)) } };
   let queue = Promise.resolve();
   const db = { ...tx, $transaction: vi.fn((work: (transaction: typeof tx) => Promise<unknown>) => { const result = queue.then(() => work(tx)); queue = result.then(() => {}, () => {}); return result; }) };
   const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response(null, { status: 204 }));
@@ -34,6 +35,16 @@ function setup() {
 const event = { eventId: "payment:q:paid", event: "payment.paid" as const, payload: { amountStroops: "10" }, effects: [{ kind: "webhook" as const, orgId: "buyer", event: "payment.paid" as const }] };
 
 describe("durable automation delivery", () => {
+  it('records sanitized background timing without payloads or URLs', async () => {
+    const tracker = { correlationId: 'safe', measure: vi.fn(async (_phase: string, run: () => Promise<unknown>) => run()), finish: vi.fn() };
+    const spy = vi.spyOn(timing, 'createTimingTracker').mockReturnValue(tracker as ReturnType<typeof timing.createTimingTracker>);
+    try {
+      const s = setup(); await s.flushAutomationEvents(); await s.flushDueDeliveries();
+      expect(spy).toHaveBeenCalledWith('background.automations'); expect(spy).toHaveBeenCalledWith('background.deliveries');
+      expect(tracker.finish).toHaveBeenCalledWith('completed');
+      expect(JSON.stringify(tracker.finish.mock.calls)).not.toMatch(/secret|https:|payload/);
+    } finally { spy.mockRestore(); }
+  });
   it("signs the exact body, uses a stable delivery ID and deduplicates repeated events", async () => {
     const s = setup(); await s.dispatchEffects(event); await s.dispatchEffects(event);
     expect(s.fetcher).toHaveBeenCalledTimes(1);
@@ -108,5 +119,85 @@ describe("durable automation delivery", () => {
   it("does not allow an outbox subscription lookup to broaden intended organizations", async () => {
     const s = setup(); s.endpoint.orgId = "other"; await s.flushAutomationEvents();
     expect(s.rows).toHaveLength(0);
+  });
+  it("reads subscriptions once per outbox batch and preserves per-intent tenancy", async () => {
+    const s = setup();
+    s.endpoints.push({ ...s.endpoint, id: "seller-hook", orgId: "seller" });
+    s.intents.push({ ...s.intents[0], id: "intent-2", eventId: "payment:q2:paid", payload: { ...s.intents[0].payload, eventId: "payment:q2:paid", orgIds: ["seller"] } });
+    expect(await s.flushAutomationEvents()).toEqual({ processed: 2, errors: 0 });
+    expect(s.tx.webhookEndpoint.findMany).toHaveBeenCalledTimes(1);
+    expect(s.tx.webhookEndpoint.findMany).toHaveBeenCalledWith({ where: { orgId: { in: ["buyer", "seller"] }, active: true }, select: { id: true, orgId: true, active: true, events: true } });
+    expect(s.rows.map((row) => [row.eventId, row.webhookEndpointId])).toEqual([[event.eventId, "hook"], ["payment:q2:paid", "seller-hook"]]);
+  });
+  it("refreshes subscriptions on each batch and excludes inactive cached rows", async () => {
+    const s = setup();
+    await s.flushAutomationEvents();
+    s.endpoint.active = false;
+    s.intents.push({ ...s.intents[0], id: "intent-2", processedAt: null, eventId: "payment:q2:paid", payload: { ...s.intents[0].payload, eventId: "payment:q2:paid" } });
+    expect(await s.flushAutomationEvents()).toEqual({ processed: 1, errors: 0 });
+    expect(s.tx.webhookEndpoint.findMany).toHaveBeenCalledTimes(2);
+    expect(s.rows).toHaveLength(1);
+  });
+  it("leaves every intent retryable if the shared subscription lookup fails", async () => {
+    const s = setup();
+    s.intents.push({ ...s.intents[0], id: "intent-2", eventId: "payment:q2:paid", payload: { ...s.intents[0].payload, eventId: "payment:q2:paid" } });
+    s.tx.webhookEndpoint.findMany.mockRejectedValueOnce(new Error("database secret"));
+    expect(await s.flushAutomationEvents()).toEqual({ processed: 0, errors: 2 });
+    expect(s.intents.every((intent) => intent.processedAt === null)).toBe(true);
+    expect(s.rows).toHaveLength(0);
+  });
+  it("keeps financial effects in intent order and reads low-budget subscriptions in its transaction", async () => {
+    const s = setup();
+    Object.assign(s.intents[0].payload, { providerId: "p1", agentId: "a" });
+    s.intents.push({ ...s.intents[0], id: "intent-2", eventId: "payment:q2:paid", payload: { ...s.intents[0].payload, eventId: "payment:q2:paid" } });
+    Object.assign(s.intents[1].payload, { providerId: "p2" });
+    const order: string[] = [];
+    let release!: () => void;
+    s.claim.mockImplementation(async (id: string) => { order.push(`claim:${id}`); if (id === "p1") await new Promise<void>((resolve) => { release = resolve; }); return { status: "skipped" }; });
+    s.chain.balanceOf.mockImplementation(async () => { order.push("balance"); return 1n; });
+    const running = s.flushAutomationEvents();
+    await vi.waitFor(() => expect(order).toEqual(["claim:p1"]));
+    release();
+    expect(await running).toEqual({ processed: 2, errors: 0 });
+    expect(order).toEqual(["claim:p1", "balance", "claim:p2"]);
+    expect(s.tx.webhookEndpoint.findMany).toHaveBeenCalledTimes(2);
+    expect(s.tx.webhookEndpoint.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: { orgId: "buyer", active: true, events: { has: "budget.low" } } }));
+  });
+  it("overlaps at most four webhook sends while concurrent flushes retain one lease per delivery", async () => {
+    const s = setup();
+    for (let id = 1; id < 9; id++) s.endpoints.push({ ...s.endpoint, id: `hook-${id}` });
+    await s.flushAutomationEvents();
+    const releases: (() => void)[] = [];
+    let active = 0; let maximum = 0;
+    s.fetcher.mockImplementation(async () => {
+      active++; maximum = Math.max(maximum, active);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      active--;
+      return new Response(null, { status: 204 });
+    });
+    const first = s.flushDueDeliveries();
+    await vi.waitFor(() => expect(s.fetcher).toHaveBeenCalledTimes(4));
+    // The second batch can lease other rows, but cannot resend leased rows.
+    const second = s.flushDueDeliveries();
+    await vi.waitFor(() => expect(s.fetcher).toHaveBeenCalledTimes(8));
+    expect(maximum).toBe(8); // Four workers per invocation, not a process-wide lock.
+    releases.splice(0).forEach((release) => release());
+    await vi.waitFor(() => expect(s.fetcher).toHaveBeenCalledTimes(9));
+    releases.splice(0).forEach((release) => release());
+    await Promise.all([first, second]);
+    expect(s.rows.every((row) => row.status === "delivered" && row.attempts === 1)).toBe(true);
+  });
+  it("does not start more webhook sends after the batch time budget expires", async () => {
+    const s = setup();
+    for (let id = 1; id < 9; id++) s.endpoints.push({ ...s.endpoint, id: `hook-${id}` });
+    await s.flushAutomationEvents();
+    const releases: (() => void)[] = [];
+    s.fetcher.mockImplementation(async () => { await new Promise<void>((resolve) => releases.push(resolve)); return new Response(null, { status: 204 }); });
+    const running = s.flushDueDeliveries();
+    await vi.waitFor(() => expect(s.fetcher).toHaveBeenCalledTimes(4));
+    s.advance(20_000);
+    releases.forEach((release) => release());
+    expect(await running).toMatchObject({ delivered: 4 });
+    expect(s.rows.filter((row) => row.attempts === 0)).toHaveLength(5);
   });
 });

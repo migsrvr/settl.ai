@@ -1,8 +1,9 @@
 # Settl.ai System Performance Optimization Plan
 
 > **Date:** 2026-11-07
+> **Scope revision:** Website loading and supporting background processing only. MCP handlers, tool contracts, broker settlement, and purchase responses are excluded. Local implementation complete; see HANDOFF.md for validation and pending hosted rollout.
 > **Spec:** [`docs/superpowers/specs/2026-11-07-performance-optimization-design.md`](../specs/2026-11-07-performance-optimization-design.md)
-> **Goal:** Achieve <2s warm navigation for primary content, zero blockchain reads on configuration screens, immediate labeled balance snapshots with background refresh (15s reuse / 30s active polling), no duplicate post-payment chain reads in the broker, and <200ms truthful action feedback.
+> **Goal:** Achieve <2s warm navigation for primary content, zero blockchain reads on configuration screens, immediate labeled balance snapshots with background refresh (15s reuse / 30s active polling), and <200ms truthful action feedback.
 
 ---
 
@@ -53,5 +54,5 @@
    - Automatic background refresh on mount and 30s interval when tab is visible.
    - Immediate truthful button/status states (`Submitting…`, `Awaiting confirmation…`) and non-retry on failure/timeout.
 2. Update UI components (`AgentBudget`, `ClaimPanel`, `CallsPanel`, `NewAgentForm`, `AddRouteForm`, `AgentControls`, ` BuyerAgentsPage`, `ProviderHome`).
-3. Run full verification in the Node 24.22.1 Linux environment (`npm test && npm run typecheck && npm run lint && npm run build`), apply additive schema changes to Neon, deploy to Vercel, and measure before/after timings and presentation flow.
+3. Run full verification in the Node 24.22.1 Linux environment (`npm test && npm run typecheck && npm run lint && npm run build`), prepare the additive SQL upgrade, then apply it and deploy only within the appropriate hosted authorization. Measure before/after browser timings and the presentation flow after rollout. No live migration, scheduler invocation, or purchase is part of local validation.
 

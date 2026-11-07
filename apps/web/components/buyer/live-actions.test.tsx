@@ -1,6 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 const refresh = vi.hoisted(() => vi.fn());
+const snapshot = { amountStroops: '10000000', source: 'cache' as const, asOf: null };
+const balanceResponse = { ok: true, json: async () => snapshot };
+function balanceAware(action: ReturnType<typeof vi.fn>) { return vi.fn((url: string, options?: RequestInit) => url.endsWith('/balance') ? Promise.resolve(balanceResponse) : action(url, options)); }
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh }) }));
 import { ClaimPanel } from '../provider/claim-panel';
 import { AgentBudget } from './agent-budget';
@@ -9,14 +12,14 @@ describe('live money actions', () => {
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
   it('converts PHP using integer arithmetic and rejects executable checkout URLs', () => { expect(phpToExactStroops('0.01', '1500')).toBe('6667'); expect(() => checkoutUrl('javascript:alert(1)')).toThrow(); expect(() => phpToExactStroops('1.001', '1500')).toThrow(); });
   it('does not turn a pending claim into a completed payout or retry', async () => {
-    const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'pending', txHash: 'real-hash' }) }); vi.stubGlobal('fetch', fetcher);
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'pending', txHash: 'real-hash' }) }); vi.stubGlobal('fetch', balanceAware(fetcher));
     render(<ClaimPanel pending={{ amountStroops: '10000000', source: 'chain', asOf: null }} merchantWallet="GMERCHANT" claims={[]} rateCents="1500" earnedStroops="10000000" settings={null} />);
     fireEvent.click(screen.getByRole('button', { name: 'Claim ₱15.00' })); fireEvent.click(screen.getByRole('button', { name: 'Confirm claim' }));
     await waitFor(() => expect(screen.getByText(/Claim pending/)).toBeTruthy()); expect(fetcher).toHaveBeenCalledTimes(1); expect(refresh).toHaveBeenCalled(); expect(screen.queryByText(/is in your wallet/)).toBeNull();
   });
   it.each(['server', 'network'])('keeps the balance and prevents another checkout after a %s failure', async (failure) => {
     const request = failure === 'network' ? vi.fn().mockRejectedValue(new Error('connection lost')) : vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: 'unavailable' }) });
-    vi.stubGlobal('fetch', request);
+    vi.stubGlobal('fetch', balanceAware(request));
     render(<AgentBudget agentId="owned" balance={{ amountStroops: '10000000', source: 'chain', asOf: null }} rateCents="1500" topups={[]} spentToday="0" heldStroops="0" active />);
     fireEvent.click(screen.getByRole('button', { name: 'Load budget' })); fireEvent.click(screen.getByRole('button', { name: 'Continue to checkout' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/Review Budget loads/)); expect(screen.getByText('₱15.00')).toBeTruthy();
@@ -28,4 +31,21 @@ describe('live money actions', () => {
     expect((screen.getByRole('button', { name: 'Load budget' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('₱15.00')).toBeTruthy();
   });
+});
+
+it('blocks claims when a pending claim is outside the visible history page', () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(balanceResponse));
+  render(<ClaimPanel pending={snapshot} merchantWallet="GMERCHANT" claims={[]} rateCents="1500" earnedStroops="10000000" settings={null} hasPendingClaim/>);
+  expect((screen.getByRole('button', { name: 'Claim ₱15.00' }) as HTMLButtonElement).disabled).toBe(true);
+  cleanup(); vi.unstubAllGlobals();
+});
+
+it('shows immediate submission progress and balance refresh does not submit a claim', async () => {
+  const action = vi.fn(() => new Promise(() => {})); vi.stubGlobal('fetch', balanceAware(action));
+  render(<ClaimPanel pending={snapshot} merchantWallet="GMERCHANT" claims={[]} rateCents="1500" earnedStroops="10000000" settings={null}/>);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh balances' })).toBeTruthy());
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh balances' })); expect(action).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Claim ₱15.00' })); fireEvent.click(screen.getByRole('button', { name: 'Confirm claim' }));
+  expect((screen.getByRole('button', { name: 'Submitting claim…' }) as HTMLButtonElement).disabled).toBe(true); expect(action).toHaveBeenCalledTimes(1);
+  cleanup(); vi.unstubAllGlobals();
 });
