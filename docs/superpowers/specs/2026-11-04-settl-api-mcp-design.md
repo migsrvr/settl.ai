@@ -25,6 +25,7 @@
 | Reuse | `@noirx402/agent-sdk` 0.3.0 is on npm | The chain adapter wraps it |
 
 ## 2. Components
+- **Background agent creation (Nov 7 user revision):** website creation commits the agent, policy, key hash and queued checkpoint, returns HTTP 202 with the one-time key, then registers through a durable worker. Wallet preparation overlaps; owner-sourced registrations stay sequential and uncertain transactions are reconciled without replay. Progress is a private buyer-owned GET, and existing MCP authentication continues rejecting agents until active. See [the background creation design](2026-11-07-background-agent-creation.md). No schema change or new job service is introduced; verified scheduled recovery is a rollout prerequisite.
 - **Broker** (`apps/web/lib/server/broker.ts`). One engine runs every paid call: quote, then policy, then pay or commit, then receipt. Both the MCP tools and `POST /api/agent/call` use it.
 - **Hosted MCP** (`apps/web/app/mcp/route.ts`)
   - Uses `@modelcontextprotocol/server` v2: `createMcpHandler` plus `requireBearerAuth`.

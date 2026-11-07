@@ -168,7 +168,7 @@ Enter these values in the form from your second screenshot:
 | Stops working on (UTC) | `12/31/2026` | Select December 31, 2026, or another date after the actual demonstration date. |
 | Providers it may pay | Check `ResiboAI` and `GeoPH` | Allow both services needed for the demonstration. An empty selection blocks all providers. |
 
-Click **Create agent** once. Wait for **Agent registered on Stellar** / `active`. A provisioning or error result is not ready to spend; inspect its state before creating another agent or repeating registration.
+Click **Create agent** once. Creation returns the saved agent and one-time API key while setup continues. Save the key immediately and follow the visible progress through wallet preparation, device registration and spending-limit registration. Wait for **Agent ready** / `active` before spending. The agent detail page also shows progress after navigation; it does not recover the plaintext key. A pending, review-needed or failed result must be inspected before creating another agent or repeating registration. Existing CLI activation utilities remain separate, explicitly invoked operator tools.
 
 Save both the returned agent ID and its one-time `stl_agent_...` API key. The ID selects the agent's dashboard/funding record. The API key authenticates Codex as that agent. They are different values.
 

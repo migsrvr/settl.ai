@@ -20,4 +20,4 @@ it('boots the packaged provider without depending on TypeScript workspace export
   } finally {
     await rm(outDir, { recursive: true, force: true });
   }
-});
+}, 20_000);

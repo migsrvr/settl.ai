@@ -61,29 +61,14 @@ export function createAgentService(options: Options) {
     if (typeof body.name !== "string" || !body.name.trim() || body.name.length > 120) throw new ApiError(400, "invalid_agent_name");
     const policy = parseAgentPolicy(body, now());
     const id = randomUUID(), signer = Keypair.random(), apiKey = `stl_agent_${randomBytes(32).toString("hex")}`;
-    const prepared = await db.$transaction(async (tx) => {
-      const owner = await ownerLane(tx, orgId); await knownProviders(tx, policy);
-      const agent = await tx.agent.create({ data: { id, orgId, name: (body.name as string).trim(), agentPublic: signer.publicKey(), agentSecretEnc: encrypt(signer.secret()), deviceHash: deviceHashForAgent(id), status: "provisioning", lifecycleRecovery: { operation: "create", stage: "accounts", state: "working" } } });
+    await db.$transaction(async (tx) => {
+      await ownerLane(tx, orgId); await knownProviders(tx, policy);
+      await tx.agent.create({ data: { id, orgId, name: (body.name as string).trim(), agentPublic: signer.publicKey(), agentSecretEnc: encrypt(signer.secret()), deviceHash: deviceHashForAgent(id), status: "provisioning", lifecycleRecovery: { version: 1, operation: "create", stage: "queued", state: "working", updatedAt: now().toISOString(), transactions: [] } } });
       await tx.policy.upsert({ where: { agentId: id }, update: {}, create: { agentId: id, ...policy } });
       await tx.agentSettings.create({ data: { agentId: id, lowBudgetAlert: policy.maxAmount } });
       await tx.agentApiKey.create({ data: { agentId: id, name: "Initial agent key", keyHash: createHash("sha256").update(apiKey).digest("hex") } });
-      return { agent, owner };
     });
-    try {
-      try { await options.ensureAccount(prepared.owner.publicKey()); await options.ensureAccount(signer.publicKey()); }
-      catch { await db.agent.update({ where: { id }, data: { status: "error", lifecycleRecovery: { operation: "create", stage: "accounts", state: "failed" } } }); return { agentId: id, status: "error" as const, apiKey, error: "account_setup_failed" }; }
-      const device = await perform(id, "create", "register_device", () => chain.registerDevice(prepared.owner, prepared.agent.deviceHash, signer.publicKey()));
-      if (!device || device.status !== "SUCCESS") return { agentId: id, status: device?.status === "FAILED" ? "error" as const : "provisioning" as const, apiKey };
-      const registered = await perform(id, "create", "register_policy", () => chain.registerAgent(prepared.owner, { deviceHash: prepared.agent.deviceHash, agent: signer.publicKey(), maxAmount: policy.maxAmount, asset: policy.asset, expiresAt: BigInt(Math.floor(policy.expiresAt.getTime() / 1000)) }));
-      if (!registered || registered.status !== "SUCCESS") return { agentId: id, status: registered?.status === "FAILED" ? "error" as const : "provisioning" as const, apiKey };
-      await db.agent.update({ where: { id }, data: { status: "active", lifecycleRecovery: { operation: "create", stage: "complete", state: "complete" } } });
-      return { agentId: id, status: "active" as const, apiKey };
-    } catch {
-      // Custody and its key hash already committed. Preserve the only plaintext
-      // key even if a later checkpoint cannot be persisted. The durable working
-      // marker continues to block source writes until explicitly reconciled.
-      return { agentId: id, status: "provisioning" as const, apiKey, error: "lifecycle_reconciliation_required" };
-    }
+    return { agentId: id, status: "provisioning" as const, apiKey };
   }
   async function prepareExisting(orgId: string, agentId: string, operation: "policy" | "revoke", policy?: Policy) {
     return db.$transaction(async (tx) => {

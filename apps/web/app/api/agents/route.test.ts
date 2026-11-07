@@ -1,23 +1,48 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
-const { createAgent, org } = vi.hoisted(() => ({ createAgent: vi.fn(), org: vi.fn() }));
+import * as timing from '@/lib/server/timing';
+const { createAgent, org, after, provisionAgent } = vi.hoisted(() => ({ createAgent: vi.fn(), org: vi.fn(), after: vi.fn(), provisionAgent: vi.fn() }));
+vi.mock('next/server', () => ({ after }));
+vi.mock('@/lib/server/agent-provisioning', () => ({ provisionAgent }));
 vi.mock("@/lib/server/agents", () => ({ createAgent }));
 vi.mock("@/lib/server/db", () => ({ getDb: () => ({ org: { findUnique: org } }) }));
 const policy = { name: "Bookkeeper", maxAmountStroops: "10000000", dailyBudgetStroops: "50000000", autoApproveUpToStroops: "1000000", expiresAt: "2027-01-01T00:00:00Z", allowlist: ["provider"] };
 const request = (body: unknown = policy, headers: Record<string, string> = {}) => new Request("https://settl.test/api/agents", { method: "POST", headers: { cookie: "settl_demo=buyer", "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
-beforeEach(() => { vi.resetAllMocks(); org.mockResolvedValue({ id: "buyer", role: "buyer" }); createAgent.mockResolvedValue({ agentId: "new-agent", status: "active", apiKey: "stl_agent_once" }); });
+beforeEach(() => { vi.resetAllMocks(); org.mockResolvedValue({ id: "buyer", role: "buyer" }); createAgent.mockResolvedValue({ agentId: "new-agent", status: "provisioning", apiKey: "stl_agent_once" }); });
 
 describe("buyer agent creation route", () => {
+  it('measures preparation without including background blockchain wait or credentials', async () => {
+    const tracker = { correlationId: 'safe', measure: vi.fn(async (_phase: string, run: () => Promise<unknown>) => run()), finish: vi.fn() };
+    const spy = vi.spyOn(timing, 'createTimingTracker').mockReturnValue(tracker as ReturnType<typeof timing.createTimingTracker>);
+    createAgent.mockResolvedValueOnce({ agentId: 'new-agent', status: 'provisioning', apiKey: 'stl_agent_once' });
+    try { await POST(request()); expect(tracker.measure.mock.calls.map(c => c[0])).toEqual(['auth', 'db']); expect(tracker.finish).toHaveBeenCalledWith('queued'); expect(JSON.stringify(tracker.finish.mock.calls)).not.toContain('stl_agent'); }
+    finally { spy.mockRestore(); }
+  });
+  it('returns the committed key before background registration starts', async () => {
+    createAgent.mockResolvedValueOnce({ agentId: 'new-agent', status: 'provisioning', apiKey: 'stl_agent_once' });
+    provisionAgent.mockReturnValue(new Promise(() => {}));
+    const response = await POST(request());
+    expect(response.status).toBe(202); expect(await response.json()).toMatchObject({ apiKey: 'stl_agent_once' });
+    expect(after).toHaveBeenCalledOnce(); expect(provisionAgent).not.toHaveBeenCalled();
+    void after.mock.calls[0][0](); expect(provisionAgent).toHaveBeenCalledWith('new-agent');
+  });
+  it('preserves the only plaintext key if scheduling throws after commit', async () => {
+    createAgent.mockResolvedValueOnce({ agentId: 'new-agent', status: 'provisioning', apiKey: 'stl_agent_once' });
+    after.mockImplementationOnce(() => { throw new Error('private scheduler failure'); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try { const response = await POST(request()); expect(response.status).toBe(202); expect(await response.json()).toMatchObject({ apiKey: 'stl_agent_once' }); }
+    finally { warn.mockRestore(); }
+  });
   it("passes the stored buyer organization and object body, returning the one-time key without caching", async () => {
     const body = { ...policy, orgId: "untrusted" };
     const response = await POST(request(body, { "content-type": "application/json; charset=utf-8" }));
-    expect(response.status).toBe(201); expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({ agentId: "new-agent", status: "active", apiKey: "stl_agent_once" });
+    expect(response.status).toBe(202); expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ agentId: "new-agent", status: "provisioning", apiKey: "stl_agent_once" });
     expect(createAgent).toHaveBeenCalledExactlyOnceWith("buyer", body);
   });
-  it.each([["active", 201], ["provisioning", 202], ["error", 200]] as const)("preserves the key and %s result at HTTP %s", async (status, httpStatus) => {
-    const result = { agentId: "new-agent", status, apiKey: "stl_agent_once", ...(status === "error" ? { error: "account_setup_failed" } : {}) };
+  it.each([["provisioning", 202]] as const)("preserves the key and %s result at HTTP %s", async (status, httpStatus) => {
+    const result = { agentId: "new-agent", status, apiKey: "stl_agent_once" };
     createAgent.mockResolvedValueOnce(result);
     const response = await POST(request()); expect(response.status).toBe(httpStatus); expect(await response.json()).toEqual(result);
   });

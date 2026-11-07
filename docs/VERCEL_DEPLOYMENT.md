@@ -57,6 +57,8 @@ The automation endpoint accepts **GET and POST `/api/cron/auto-claim`** with the
 
 **No recurring job is provisioned or verified.** `apps/web/vercel.json` contains no `crons` entry, and the deployed team's tier has not been verified. [Vercel's cron limits](https://vercel.com/docs/cron-jobs/usage-and-pricing) allow daily jobs on Hobby and minute intervals on Pro/Enterprise. Do not add a minute schedule until the deployment tier is confirmed to support it. A daily safety-net claim job does not provide prompt outbox delivery or webhook retries.
 
+Background agent creation also depends on this recovery schedule. The creation POST queues durably and starts registration through Next.js `after()` immediately; the same authenticated automation endpoint now processes saved provisioning jobs after interrupted execution. Configure and verify the external one-minute schedule before deploying/enabling the new flow. A successful immediate background run does not prove scheduled recovery. Cron success responses include a safe `provisioning` count summary; stored transaction identities are observed rather than resubmitted. No new database columns are required for this feature.
+
 Until a supported hosting schedule is provisioned, configure an external recurring job against the production origin with:
 
 - Frequency: every minute (`* * * * *`), using POST (or the compatible GET), no request body, and the bearer value stored in the scheduler's secret store matching the deployed `CRON_SECRET`.

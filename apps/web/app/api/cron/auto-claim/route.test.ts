@@ -1,14 +1,25 @@
 // @vitest-environment node
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { GET, POST } from "./route";
-const { claims, intents, deliveries, topups } = vi.hoisted(() => ({ claims: vi.fn(), intents: vi.fn(), deliveries: vi.fn(), topups: vi.fn() }));
+const { claims, intents, deliveries, topups, provisioning } = vi.hoisted(() => ({ claims: vi.fn(), intents: vi.fn(), deliveries: vi.fn(), topups: vi.fn(), provisioning: vi.fn() }));
+vi.mock('@/lib/server/agent-provisioning', () => ({ processAgentProvisioning: provisioning }));
 vi.mock("@/lib/server/velo", () => ({ processPaidTopups: topups }));
 vi.mock("@/lib/server/claims", () => ({ autoClaimProviders: claims }));
 vi.mock("@/lib/server/dispatcher", () => ({ flushAutomationEvents: intents, flushDueDeliveries: deliveries }));
 const request = (token = "cron-secret") => new Request("https://settl.test/api/cron/auto-claim", { method: "POST", headers: { authorization: `Bearer ${token}` } });
-beforeEach(() => { vi.resetAllMocks(); vi.stubEnv("CRON_SECRET", "cron-secret"); claims.mockResolvedValue({ completed: 1 }); intents.mockResolvedValue({ processed: 2, errors: 0 }); deliveries.mockResolvedValue({ delivered: 2 }); topups.mockResolvedValue({ processed: 1, completed: 1, failed: 0, pending: 0, blocked: false }); });
+beforeEach(() => { vi.resetAllMocks(); vi.stubEnv("CRON_SECRET", "cron-secret"); provisioning.mockResolvedValue({ processed: 1, active: 1, pending: 0, failed: 0, errors: 0 }); claims.mockResolvedValue({ completed: 1 }); intents.mockResolvedValue({ processed: 2, errors: 0 }); deliveries.mockResolvedValue({ delivered: 2 }); topups.mockResolvedValue({ processed: 1, completed: 1, failed: 0, pending: 0, blocked: false }); });
 afterEach(() => vi.unstubAllEnvs());
 describe("protected automation cron", () => {
+  it('processes persisted provisioning jobs only after cron authentication', async () => {
+    expect((await POST(request('bad'))).status).toBe(401); expect(provisioning).not.toHaveBeenCalled();
+    const response = await POST(request()); expect(response.status).toBe(200);
+    expect(provisioning).toHaveBeenCalledOnce(); expect(await response.json()).toMatchObject({ provisioning: { processed: 1, active: 1 } });
+  });
+  it('reports failed provisioning without suppressing other durable queues or leaking errors', async () => {
+    provisioning.mockRejectedValue(new Error('custodial-wallet-secret'));
+    const response = await POST(request()); expect(response.status).toBe(500); expect(await response.text()).not.toContain('custodial');
+    expect(topups).toHaveBeenCalledOnce(); expect(claims).toHaveBeenCalledOnce();
+  });
   it("supports scheduler GET with identical authentication and uncached processing", async () => {
     const get = (token?: string) => new Request("https://settl.test/api/cron/auto-claim", { headers: token ? { authorization: `Bearer ${token}` } : {} });
     expect((await GET(get())).status).toBe(401);

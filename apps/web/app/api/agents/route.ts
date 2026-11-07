@@ -1,14 +1,25 @@
 import { ApiError, apiErrorResponse, jsonResponse, readObjectBody, requireBuyerOrg } from "@/lib/server/api-auth";
 import { createAgent } from "@/lib/server/agents";
+import { after } from 'next/server';
+import { provisionAgent } from '@/lib/server/agent-provisioning';
+import { createTimingTracker } from '@/lib/server/timing';
 
 export async function POST(request: Request): Promise<Response> {
+  const timing = createTimingTracker('agents.create');
   try {
-    const { orgId } = await requireBuyerOrg(request);
+    const { orgId } = await timing.measure('auth', () => requireBuyerOrg(request));
     if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get("content-type") ?? "")) throw new ApiError(400, "invalid_body");
     const body = await readObjectBody(request);
-    const result = await createAgent(orgId, body);
-    // Every persisted creation outcome carries the key shown only this once,
-    // including provisioning and account/chain setup failures.
-    return jsonResponse(result, result.status === "active" ? 201 : result.status === "provisioning" ? 202 : 200);
-  } catch (error) { return apiErrorResponse(error); }
+    const result = await timing.measure('db', () => createAgent(orgId, body));
+    if (result.status === 'provisioning') {
+      // Registration is durably queued already. Scheduling must not lose the key.
+      try { after(async () => {
+        try { await provisionAgent(result.agentId); }
+        catch { console.warn('settl_provisioning_background_failed'); }
+      }); }
+      catch { console.warn('settl_provisioning_schedule_unavailable'); }
+    }
+    timing.finish('queued');
+    return jsonResponse(result, 202);
+  } catch (error) { timing.finish('rejected'); return apiErrorResponse(error); }
 }

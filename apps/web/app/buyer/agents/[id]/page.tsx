@@ -9,6 +9,7 @@ import { money, when } from '@/components/buyer/live-money';
 import { Pill } from '@/components/ui';
 import { loadBuyerAgentDetail } from '@/lib/server/dashboard';
 import { HistoryPagination } from '@/components/buyer/history-pagination';
+import { ProvisioningProgress } from '@/components/buyer/provisioning-progress';
 export const metadata: Metadata = { title: 'Agent' };
 export function generateStaticParams() { return [{ id: 'bookkeeper' }]; }
 async function LiveAgent({ params, searchParams }: Pick<PageProps<'/buyer/agents/[id]'>, 'params' | 'searchParams'>) {
@@ -34,6 +35,7 @@ async function LiveAgent({ params, searchParams }: Pick<PageProps<'/buyer/agents
   ] : [];
   return <>
     <header className="flex flex-col gap-3"><div className="flex flex-wrap items-center gap-3"><h1 className="font-display text-2xl font-bold">{agent.name}</h1><Pill tone={agent.status === 'active' ? 'paid' : 'neutral'}>{agent.status}</Pill></div><p className="break-all font-mono text-sm">{agent.id}</p><p className="break-all font-mono text-sm">Wallet {agent.agentPublic}</p></header>
+    {agent.status === 'provisioning' && <ProvisioningProgress agentId={agent.id}/>}
     <div className="flex flex-wrap items-start gap-10">
       <AgentBudget agentId={agent.id} balance={agent.balance} rateCents={data.rateCents} topups={agent.topups} spentToday={spent} heldStroops={agent.heldStroops} active={agent.status === 'active'}/>
       <section className="flex min-w-0 flex-[1_1_300px] flex-col gap-4"><h2 className="text-lg font-medium">Limits</h2>
