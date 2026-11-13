@@ -10,6 +10,15 @@ if (typeof dns.setDefaultResultOrder === "function") dns.setDefaultResultOrder("
 const globalForPrisma = globalThis as unknown as { settlPrisma?: PrismaClient };
 let client: PrismaClient | undefined;
 
+/**
+ * Supply a host-provided client (for example the sandbox's embedded database).
+ * Pass undefined to return to the lazy DATABASE_URL client.
+ */
+export function setDb(next: PrismaClient | undefined): void {
+  client = next;
+  if (next === undefined) delete globalForPrisma.settlPrisma;
+}
+
 /** Lazy so static builds can load modules without opening a database connection. */
 export function getDb(): PrismaClient {
   if (typeof window !== "undefined") throw new Error("Database access is only available on the server.");

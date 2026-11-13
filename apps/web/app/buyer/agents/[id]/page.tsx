@@ -4,6 +4,7 @@ import { AppShell } from '@/components/app-shell';
 import { ActivityTable } from '@/components/buyer/activity-table';
 import { AgentBudget } from '@/components/buyer/agent-budget';
 import { AgentControls } from '@/components/buyer/live-agent-controls';
+import { ConnectAgent } from '@/components/buyer/connect-agent';
 import { DashboardLoading, DashboardUnavailable } from '@/components/buyer/live-state';
 import { money, when } from '@/components/buyer/live-money';
 import { Pill } from '@/components/ui';
@@ -43,6 +44,7 @@ async function LiveAgent({ params, searchParams }: Pick<PageProps<'/buyer/agents
         <AgentControls agent={agent} providers={data.providers} rateCents={data.rateCents}/>
       </section>
     </div>
+    {agent.status === 'active' && <ConnectAgent/>}
     <HistoryPagination path={`/buyer/agents/${encodeURIComponent(id)}`} nextCursor={agent.topupsNextCursor} query={{ cursor, status, q }} cursorKey="topupCursor" label="Next 25 budget loads"/>
     <ActivityTable calls={calls} approvals={data.approvals.filter(a => a.agentId === agent.id)} rateCents={data.rateCents} historyUrl={`/api/buyer/calls?${historyQuery}`} status={status} pagePath={`/buyer/agents/${encodeURIComponent(id)}`} query={{ topupCursor, status, q }}/>
     <HistoryPagination path={`/buyer/agents/${encodeURIComponent(id)}`} nextCursor={data.nextCursor} query={{ topupCursor, status, q }} label="Next 25 calls"/>

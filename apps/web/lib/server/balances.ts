@@ -1,6 +1,7 @@
 import type { Balance } from './dashboard';
 import { createStellarClient, loadStellarConfig } from '@settl/stellar';
 import { ApiError } from './api-auth';
+import { readBalance } from './chain';
 import { getDb } from './db';
 import { createTimingTracker } from './timing';
 
@@ -57,4 +58,16 @@ export async function observeProviderBalance(orgId: string): Promise<Balance> {
   return service.observe(`provider:${orgId}:${provider.id}`, { amount: provider.cachedPendingBalance, asOf: provider.pendingBalanceUpdatedAt },
     () => createStellarClient(loadStellarConfig()).pendingBalance(provider.merchantWallet),
     (amount, at) => db.provider.updateMany({ where: { id: provider.id, orgId, OR: [{ pendingBalanceUpdatedAt: null }, { pendingBalanceUpdatedAt: { lte: at } }] }, data: { cachedPendingBalance: amount, pendingBalanceUpdatedAt: at } }));
+}
+
+/**
+ * An agent's escrow balance for its own MCP budget view: a snapshot under 15 seconds old is reused,
+ * otherwise the chain is read (through the sandbox-aware chain seam) and the snapshot refreshed.
+ * Display only; authorization always reads fresh state.
+ */
+export function observeAgentBalanceById(agent: { id: string; deviceHash: string; cachedBalance: bigint | null; balanceUpdatedAt: Date | null }): Promise<Balance> {
+  const db = getDb();
+  return service.observe(`agent-mcp:${agent.id}`, { amount: agent.cachedBalance, asOf: agent.balanceUpdatedAt },
+    () => readBalance(agent.deviceHash),
+    (amount, at) => db.agent.updateMany({ where: { id: agent.id, OR: [{ balanceUpdatedAt: null }, { balanceUpdatedAt: { lte: at } }] }, data: { cachedBalance: amount, balanceUpdatedAt: at } }));
 }

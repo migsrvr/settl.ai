@@ -3,7 +3,7 @@ import { phpToStroops } from "@settl/core";
 import { Asset, Keypair, Networks } from "@stellar/stellar-sdk";
 import { createHash } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { PrismaClient } from "../lib/generated/prisma/client";
+import type { Prisma, PrismaClient } from "../lib/generated/prisma/client";
 import { getDb } from "../lib/server/db";
 import { encryptWalletSecret } from "../lib/server/wallets";
 import { applyDemoUsageBilling } from "./demo-usage-billing";
@@ -17,6 +17,37 @@ function wallet() {
   const keypair = Keypair.random();
   return { walletPublic: keypair.publicKey(), walletSecretEnc: encryptWalletSecret(keypair.secret()) };
 }
+
+const receiptFixtures: Prisma.InputJsonValue = {
+  type: "object",
+  properties: {
+    fixture: { type: "string", enum: ["clean", "blurry", "wrong_total"], description: "Which sample receipt to read. Defaults to clean." },
+  },
+  additionalProperties: false,
+};
+
+/** What agents are told about each demo service. Filled only where an existing database has none. */
+export const DEMO_METADATA: Record<string, { description: string; inputSchema: Prisma.InputJsonValue; example: Prisma.InputJsonValue }> = {
+  resibo_parse: {
+    description: "Reads a receipt and returns the merchant, date, total, line items and a confidence score. This demo reads a sample receipt chosen with fixture.",
+    inputSchema: receiptFixtures,
+    example: { fixture: "clean" },
+  },
+  resibo_pro: {
+    description: "Higher-accuracy receipt reading with the same output as Receipt OCR. This demo reads a sample receipt chosen with fixture.",
+    inputSchema: receiptFixtures,
+    example: { fixture: "clean" },
+  },
+  geoph_lookup: {
+    description: "Looks up a Philippine city or municipality and returns its province and region.",
+    inputSchema: {
+      type: "object",
+      properties: { city: { type: "string", minLength: 1, maxLength: 256, description: "City or municipality, for example Makati." } },
+      additionalProperties: false,
+    },
+    example: { city: "Makati" },
+  },
+};
 
 /** Database records only. Registration and funding are a separate live step. */
 export async function seedDemo(db: PrismaClient, { phpPerXlm, apiKey }: SeedOptions): Promise<void> {
@@ -60,7 +91,15 @@ export async function seedDemo(db: PrismaClient, { phpPerXlm, apiKey }: SeedOpti
       { id: "resibo_pro", providerId: "resibo", name: "Receipt OCR Pro", route: "/parse-receipt-pro", url: "http://localhost:3001/parse-receipt-pro", price: amount(15), mode: "per_call" as const },
       { id: "geoph_lookup", providerId: "geoph", name: "GeoPH lookup", route: "/lookup", url: "http://localhost:3001/lookup", price: amount(8), mode: "per_call" as const },
     ]) {
-      await tx.endpoint.upsert({ where: { id: endpoint.id }, update: {}, create: endpoint });
+      const metadata = DEMO_METADATA[endpoint.id];
+      await tx.endpoint.upsert({ where: { id: endpoint.id }, update: {}, create: { ...endpoint, ...metadata } });
+      // Older demo databases predate metadata: fill only what is missing, never replace a provider's own text.
+      const current = await tx.endpoint.findUnique({ where: { id: endpoint.id }, select: { description: true, inputSchema: true, example: true } });
+      if (current && metadata) {
+        const missing = Object.fromEntries((["description", "inputSchema", "example"] as const)
+          .filter((key) => current[key] === null).map((key) => [key, metadata[key]]));
+        if (Object.keys(missing).length > 0) await tx.endpoint.update({ where: { id: endpoint.id }, data: missing });
+      }
       // Repair old demo seeds without replacing an intentionally configured origin.
       await tx.endpoint.updateMany({ where: { id: endpoint.id, url: null }, data: { url: endpoint.url } });
     }

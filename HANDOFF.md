@@ -1,6 +1,54 @@
 # Handoff: Settl.ai
 
-Last updated 2026-11-07 by Codex. Read this first, then the docs it links to.
+Last updated 2026-11-11 by Claude (MCP work, and the Nov 10 sandbox/SDK work); earlier sections by Codex and Gemini. Read this first, then the docs it links to.
+
+## MCP that agents can use without guessing, Nov 11
+
+The user asked to improve the MCP after the sandbox/SDK work. Spec: `docs/superpowers/specs/2026-11-11-settl-mcp-design.md`; plan: `docs/superpowers/plans/2026-11-11-settl-mcp.md`. The user declined committing the Nov 10 work first, so both slices sit uncommitted in the same tree. Nothing was deployed, published or applied to Neon.
+
+**Must happen before deploying:** apply `apps/web/prisma/endpoint-metadata-upgrade.sql` to Neon (three nullable `endpoints` columns: `description`, `input_schema`, `example`). Code that selects them fails on a database without them. Instructions are in `apps/web/prisma/README.md`. Then rerun the seed to fill demo metadata where missing.
+
+**What changed**
+- Service metadata: optional description, input JSON Schema and example on `Endpoint`, validated by `lib/server/service-metadata.ts` (SDK `fromJsonSchema`/Ajv; object root; 500 chars, 16 KB, 4 KB). Accepted by `POST /api/provider/register` (fills missing metadata on an existing endpoint, reports differences as `drift`, never overwrites; compares JSON in canonical key order because jsonb reorders keys), the dashboard route and form, and SDK `settl()/withSettl()/registerEndpoint()`. The seed describes the three demo services.
+- The broker refuses input that does not match a service's schema before any lock, quote or authorization: `declined / invalid_input` with `issues`. A stored schema that no longer compiles never blocks a call.
+- Errors: `lib/server/mcp-errors.ts`. Allow-listed `BrokerError` codes (BrokerError now sets `name`) are returned with `message`, `next`, `retryable`; anything else stays `TOOL_FAILED`. The `error` string field is unchanged.
+- `settl_call` declares an output schema (one object with a `status` enum; a union root would be wrapped for older clients) and is built field by field, so internal `effects` no longer reach agents. Every non-paid result has `next`.
+- Typed per-service tools: `lib/server/service-catalog.ts` caches active services for 30 s per process (registration invalidates in-process) and names tools `<provider>_<service>` (unique, max 64, never `settl_`). Capped at 40; a schema that will not compile falls back to free-form input. The MCP route loads the catalog per request and still works without it.
+- `settl_wait_for_approval` (reads once a second, at most 55 s, never pays; a past-expiry pending approval reads as expired). `settl_get_budget` reuses the 15 s balance snapshot (`observeAgentBalanceById` in `balances.ts`, sandbox-aware) and adds `balanceSource`/`balanceAsOf`; an unreadable balance is `BALANCE_UNAVAILABLE`.
+- MCP resources `settl://services` and `settl://guide`, prompt `buy_service`. `lib/server/discovery.ts` serves `/llms.txt`, the SEP-2127 server card at `/mcp/server-card` (reserved location; CORS, ETag/304, `application/mcp-server-card+json`, an Authorization header declared as required and secret, no tools listed per the SEP) and `/.well-known/ai-catalog.json`. A test keeps the published tool list equal to the real tools. The sandbox serves the same documents.
+- `@settl/client`: `SettlToolError` has `next`/`retryable`, `waitForApproval()`, `callAndWait` waits on the gateway and falls back to polling on older gateways, `settlTools` has seven tools, `ServiceInfo` has the metadata.
+- Dashboard: `components/buyer/connect-agent.tsx` (Claude Code, Codex, Cursor, `@settl/client`) on the new-agent result (key filled in) and on active agents' pages (placeholder, since only the key hash is stored).
+
+**Not verified here:** the dashboard Connect panel and form were checked by component tests only; a visual check needs the user's Neon environment or a preview deploy. The `callAndWait` fallback to polling on an older gateway has no automated test.
+
+**Verification:** in the WSL Linux copy (Node 24.22.1), `npm test && npm run typecheck && npm run lint && npm run build` all exit 0.
+
+## Sandbox and publishable SDK, Nov 10
+
+The user asked how to make the SDK and MCP easier for developers and startups. Spec: `docs/superpowers/specs/2026-11-10-settl-sandbox-sdk-design.md`; plan: `docs/superpowers/plans/2026-11-10-settl-sandbox-sdk.md`; walkthrough: `docs/QUICKSTART.md`. Nothing is committed, published to npm, deployed or run against Neon, Velo or Stellar.
+
+**What exists now**
+- `packages/dev` (`@settl/dev`, CLI `settl-dev`): a local gateway with fake money. It runs the REAL broker, policy, approvals and `/mcp` on PGlite (embedded Postgres, `max: 1` pool) with an in-memory `FakeChain`. `@settl/stellar` is replaced by `src/stellar-stub.ts` (tsconfig paths, vitest alias) so Noir, Velo and Stellar clients never load. `src/schema.sql` is generated from the Prisma schema; a hash test fails on drift (`npm run schema -w @settl/dev`). One sandbox per process. Run from a clone: `npm run sandbox` (flags after `--`) after `npm run db:generate -w web`. Do not call `tsx packages/dev/src/cli.ts` directly from the root: it needs the package tsconfig (`paths`) to swap in the stub, which `npm run sandbox` provides.
+- Seams in `apps/web/lib/server`: `setDb` (`db.ts`) and `chain.ts` (`setChain`, `readBalance`); `broker()` and `settl_get_budget` honor them. Production behavior is unchanged.
+- Route bodies for quotes, payments/verify, verify and agent/call moved to `lib/server/handlers/*` (the routes re-export them); approval resolution is `approval-resolution.ts`.
+- `POST /api/provider/register` (`handlers/register.ts`): provider-key auth, per-call only, origin allowlist, never mutates an existing endpoint (it reports `drift`). A real gateway does not create providers; the sandbox does (org id `org_provider_<id>`, so it cannot collide with seeded orgs such as `org_acme`).
+- `@settl/sdk`: shared `core.ts`; `settl()` (Express) and `withSettl()` (Fetch API) are adapters. Both take `{ endpointId }` or `{ provider, name, price, url }` and expose `.register()`. Registration is lazy on purpose (never at import, so a Next.js build makes no network call). 72 tests; the original 49 are unchanged.
+- `@settl/client`: `connectSettl()` over MCP, typed results, `callAndWait` (pays once after a human approves; never retries `pending`), and `@settl/client/ai` (`settlTools`).
+- `examples/` run against the sandbox in `packages/dev/test/examples.test.ts`. The landing snippets (`apps/web/lib/landing-snippets.ts`) must equal the marked regions in them (`landing-snippets.test.ts`).
+- `@settl/core`, `@settl/sdk` and `@settl/client` build with tsup. `publishManifest` plus `scripts/publish-manifest.mjs` swap in dist exports only around `npm pack`. The tarballs were installed in a clean project and worked in ESM, CJS and strict TypeScript.
+
+**Decisions that differ from the first plan**
+- No quote cache: a quote is bound to one agent and nonce and is single-use, so sharing one would fail the second payer.
+- No Hono or Next wrapper modules: `withSettl` already takes a Request.
+- No `settlFetch(url)`: Settl is custodial, so an agent pays by service id and the broker calls the provider.
+
+**Not done / open**
+- `@settl/dev` has no publish bundle. It needs to bundle `apps/web/lib/server`, the generated Prisma client and `schema.sql` (and `@next/env` is pulled in by `prisma/seed.ts`). `npx settl-dev` will not work until then.
+- No `LICENSE` file exists; the user must choose one before publishing. The `@settl` npm scope is unverified. Publishing needs the user's explicit go-ahead.
+- Landing steps and stage copy are still outcome-first (pre-existing).
+- Next slice: per-provider keys, URL ownership proof, richer MCP service metadata (description, input schema) and x402 interop.
+
+**Verification environment:** the Windows checkout cannot run the suite (see the Nov 7 notes). Everything above was verified in a Linux copy in WSL (Node 24.22.1, `~/settl-work`, synced from this tree): `npm test && npm run typecheck && npm run lint && npm run build` all exit 0. `package.json` and `package-lock.json` changed (tsup, new workspaces); they were generated there and copied back. The Windows `node_modules` was not touched.
 
 ## Website loading and background performance, Nov 7
 
@@ -122,6 +170,9 @@ packages/core           @settl/core: Zod schemas (Quote, PaymentHeader, Receipt)
 packages/verifier       @settl/verifier: receipt v1 checks (runChecks)
 packages/sdk            @settl/sdk: Express per-call and outcome middleware (new outcome checks pending)
 packages/stellar        @settl/stellar: testnet Noir adapter, Velo gas, relayer fallback; live gate passed
+packages/client        @settl/client: typed agent client (MCP) and AI SDK tools
+packages/dev           @settl/dev: local sandbox gateway with fake money (PGlite + in-memory ledger)
+examples/              runnable provider and agent examples, tested against the sandbox
 apps/web/prisma         PostgreSQL schema and demo seed (DB verification reported by Gemini)
 apps/resibo             Standalone Express demo provider (accepted)
 apps/web/app/mcp        Hosted MCP Streamable HTTP/SSE endpoint (accepted)

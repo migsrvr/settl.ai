@@ -1,5 +1,9 @@
 import { ApiError, apiErrorResponse, isNonEmptyString, jsonResponse, readObjectBody, requireProviderOrg } from "@/lib/server/api-auth";
 import { getDb } from "@/lib/server/db";
+import { MetadataError, validateServiceMetadata, type ServiceMetadata } from "@/lib/server/service-metadata";
+import type { Prisma } from "@/lib/generated/prisma/client";
+
+const METADATA_CODES = { description: "invalid_description", inputSchema: "invalid_input_schema", example: "invalid_example" } as const;
 export async function POST(request: Request): Promise<Response> {
   try {
     const { orgId } = await requireProviderOrg(request);
@@ -13,10 +17,18 @@ export async function POST(request: Request): Promise<Response> {
     const origins = (process.env.SETTL_PROVIDER_ALLOWED_ORIGINS?.trim() || "http://localhost:3001,http://127.0.0.1:3001").split(",").map((value) => value.trim()).filter(Boolean);
     if (!origins.includes(url.origin)) throw new ApiError(400, "provider_origin_not_allowed");
     if (body.mode === "outcome" && body.criteriaId !== "receipt_v1" && body.criteriaId !== "resibo.receipt.v1") throw new ApiError(400, "invalid_criteria");
+    let metadata: ServiceMetadata;
+    try {
+      metadata = await validateServiceMetadata({ description: body.description, inputSchema: body.inputSchema, example: body.example });
+    } catch (error) {
+      if (error instanceof MetadataError) throw new ApiError(400, METADATA_CODES[error.field]);
+      throw error;
+    }
     const provider = await getDb().provider.findUnique({ where: { orgId }, select: { id: true } });
     if (!provider) throw new ApiError(404, "provider_not_found");
     const endpoint = await getDb().endpoint.create({ data: {
       providerId: provider.id, name: body.name.trim(), method: "POST", route: body.route, url: url.toString(), price: BigInt(body.priceStroops), mode: body.mode as "per_call" | "outcome",
+      ...(metadata as Pick<Prisma.EndpointUncheckedCreateInput, "description" | "inputSchema" | "example">),
       ...(body.mode === "outcome" ? { criteriaId: "resibo.receipt.v1", criteria: { schema: "resibo.receipt.v1", required: ["merchant_name", "date", "total", "line_items"], minConfidence: .85, lineItemsSumToTotal: { tolerance: .01 } } } : {}),
     } });
     return jsonResponse({ endpointId: endpoint.id }, 201);

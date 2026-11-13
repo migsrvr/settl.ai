@@ -5,18 +5,57 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "tsup",
+    "prepack": "npm run build && node ../../scripts/publish-manifest.mjs apply",
+    "postpack": "node ../../scripts/publish-manifest.mjs restore"
   },
   "dependencies": {
-    "@settl/core": "^0.1.0",
-    "express": "^5.1.0"
+    "@settl/core": "^0.1.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^24",
+    "express": "^5.1.0",
     "vitest": "^3.2.7"
+  },
+  "description": "Charge AI agents per API call with Settl: Express middleware for quotes, payment verification and outcome billing.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/migsrvr/settl.ai.git",
+    "directory": "packages/sdk"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "publishManifest": {
+    "private": false,
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "require": "./dist/index.cjs"
+      }
+    }
+  },
+  "peerDependencies": {
+    "express": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "express": {
+      "optional": true
+    }
   }
 }

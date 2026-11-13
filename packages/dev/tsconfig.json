@@ -1,0 +1,7 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": { "@settl/stellar": ["./src/stellar-stub.ts"] }
+  },
+  "include": ["src", "test", "vitest.config.ts"]
+}

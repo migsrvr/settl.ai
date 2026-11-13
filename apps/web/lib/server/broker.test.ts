@@ -148,6 +148,34 @@ describe("broker quotes and policy", () => {
   });
 });
 
+describe("broker input validation", () => {
+  const schema = { type: "object", properties: { fixture: { type: "string", enum: ["clean", "blurry"] } }, additionalProperties: false };
+
+  it("declines input that does not match the service's schema before any lock, quote or payment", async () => {
+    const s = setup();
+    Object.assign(s.endpoint, { inputSchema: schema });
+    const result = await s.executeCall({ agentId: "bookkeeper", endpointId: "ocr", input: { fixture: "torn" } });
+    expect(result).toMatchObject({ status: "declined", reason: "invalid_input", issues: [expect.stringMatching(/fixture/)] });
+    expect(s.db.$transaction).not.toHaveBeenCalled();
+    expect(s.chain.authorize).not.toHaveBeenCalled();
+    expect(s.quotes.size).toBe(0);
+  });
+
+  it("pays as usual when the input matches", async () => {
+    const s = setup();
+    Object.assign(s.endpoint, { inputSchema: schema });
+    const result = await s.executeCall({ agentId: "bookkeeper", endpointId: "ocr", input: { fixture: "clean" } });
+    expect(result.status).toBe("paid");
+    expect(s.chain.authorize).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves services without a schema to the provider, as before", async () => {
+    const s = setup();
+    const result = await s.executeCall({ agentId: "bookkeeper", endpointId: "ocr", input: { anything: true } });
+    expect(result.status).toBe("paid");
+  });
+});
+
 describe("broker authorization and recovery", () => {
   it.each(["clean", "blurry", "wrong_total"])("charges mock OCR usage before returning the %s fixture, without outcome checks", async (fixture) => {
     const s = setup(); s.endpoint.url = "https://provider.example/ocr";

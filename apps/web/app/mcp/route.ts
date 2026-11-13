@@ -1,11 +1,18 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { requireAgentAuth } from '../../lib/server/api-auth';
 import { createAgentMcpServer } from '../../lib/server/mcp-tools';
+import { loadCatalog, type CatalogEntry } from '../../lib/server/service-catalog';
 
 // The SDK invokes this factory for every HTTP request. No agent-specific server is shared.
-const handler = createMcpHandler(({ authInfo }) => {
+const handler = createMcpHandler(async ({ authInfo }) => {
   if (!authInfo?.clientId) throw new Error('Authenticated agent identity is required');
-  return createAgentMcpServer(authInfo.clientId);
+  let services: CatalogEntry[] = [];
+  try {
+    services = await loadCatalog();
+  } catch {
+    // Typed service tools are a convenience; settl_call and the other tools still work without them.
+  }
+  return createAgentMcpServer(authInfo.clientId, { services });
 }, {
   legacy: 'stateless',
   responseMode: 'sse',

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ButtonLink, Logo, Pill } from "@/components/ui";
 import { CONTRACTS } from "@/lib/demo-data";
+import { AGENT_CODE, PROVIDER_CODE } from "@/lib/landing-snippets";
 
 const STEPS = [
   {
@@ -27,20 +28,6 @@ const RECEIPT = [
   ["Payment", "Signed by the agent, held until checked"],
   ["Checks", "5 of 5 passed"],
 ];
-
-const PROVIDER_CODE = `import { settl } from "settl-sdk";
-
-app.post("/parse-receipt",
-  settl({ price: "2.00", currency: "PHP",
-          mode: "outcome", criteria: "resibo.receipt.v1" }),
-  parseReceiptHandler);`;
-
-const AGENT_CODE = `import { settlFetch } from "settl-client";
-
-const res = await settlFetch(url, {
-  method: "POST", body: image,
-  wallet: agentKeypair, deviceHash,
-  maxPrice: "5.00" });`;
 
 export default function Landing() {
   return (
@@ -114,11 +101,11 @@ export default function Landing() {
 
       <section id="code" className="bg-well">
         <div className="mx-auto flex max-w-[1360px] flex-col gap-10 px-10 py-36">
-          <h2 className="max-w-[30ch] font-display text-3xl font-bold tracking-[-0.025em]">Five lines on your server. One function in the agent.</h2>
+          <h2 className="max-w-[30ch] font-display text-3xl font-bold tracking-[-0.025em]">A few lines on your server. One call in the agent.</h2>
           <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,420px),1fr))] gap-6">
             {[
-              ["Provider, with settl-sdk", PROVIDER_CODE],
-              ["Agent, with settl-client", AGENT_CODE],
+              ["Provider, with @settl/sdk", PROVIDER_CODE],
+              ["Agent, with @settl/client", AGENT_CODE],
             ].map(([label, code]) => (
               <div key={label} className="flex min-w-0 flex-col gap-2">
                 <span className="text-xs text-ink-2">{label}</span>

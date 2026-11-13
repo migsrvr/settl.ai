@@ -18,7 +18,7 @@ Companies want agents to use paid tools without handing them an unrestricted wal
 
 Settl is a payment gateway for API providers and AI agents. A provider registers a priced endpoint and adds the Express middleware. A buyer creates an agent, funds its escrow and sets its spending rules. The agent connects through REST or hosted MCP, discovers a service and requests the purchase. Settl checks policy, coordinates Noir authorization and the provider request, and records the receipt.
 
-The implementation includes provider/buyer dashboards, six authenticated MCP tools, a provider SDK, human approvals, Velo top-ups, claims and automation handlers. External clients such as Codex CLI can use the hosted MCP. The separate Bookkeeper CLI uses an LLM to request tools.
+The implementation includes provider/buyer dashboards, seven authenticated MCP tools plus one typed tool per service, a provider SDK, human approvals, Velo top-ups, claims and automation handlers. External clients such as Codex CLI can use the hosted MCP. The separate Bookkeeper CLI uses an LLM to request tools.
 
 **Current demo:** Receipt OCR costs **PHP 2 per call**, including blurry fixtures. Pro costs PHP 15 and GeoPH costs PHP 8. These are demo products with fixture outputs, not a production OCR service. Optional **Settl on Result** products charge only when agreed checks pass. The MVP uses custodial testnet wallets and native test XLM; peso amounts use a configured demo rate. Demo workspace selection is not production authentication.
 
@@ -127,10 +127,13 @@ settl.ai/
   apps/resibo/       Express demo API with receipt/geography fixtures
   apps/agent/        LLM Bookkeeper CLI, MCP client and durable local journal
   packages/core/     Quotes, payment headers, receipts and amount helpers
-  packages/sdk/      Express payment middleware and outcome handshake
+  packages/sdk/      Express and web-standard payment middleware, endpoint registration, outcome handshake
+  packages/client/   Typed agent client for the MCP and Vercel AI SDK tools
+  packages/dev/      Local sandbox gateway with fake money (embedded Postgres, in-memory ledger)
   packages/stellar/  Noir SDK adapter, Velo gas, transaction proof and recovery
   packages/verifier/ Deterministic receipt-result checks
   scripts/           Rehearsal and explicit testnet setup utilities
+  examples/          Runnable provider and agent examples, tested against the sandbox
   docs/              Screenshots, pitch materials, runbooks, designs and evidence
   .env.example       Web/server template with no credentials
   package.json       npm workspace root for apps/* and packages/*
@@ -191,6 +194,20 @@ node --env-file=apps/agent/.env --import tsx apps/agent/src/run.ts
 ```
 
 This can request paid testnet tools. Prepare active identity, funded escrow, policy headroom and reachable provider URLs first. See the [agent guide](https://github.com/migsrvr/settl.ai/blob/master/apps/agent/README.md). Optional `npm run demo` uses Python 3 and resets its separate rehearsal journal; it is a deterministic testnet driver, not needed to view the site.
+
+### Try the SDK without any accounts
+
+`packages/dev` runs a local Settl gateway with fake money: the real broker, spending policy, approvals and MCP tools on an embedded Postgres and an in-memory ledger. No Neon, Velo or Stellar setup is needed.
+
+```sh
+npm run sandbox
+```
+
+Then put a price on an API with `@settl/sdk` (`settl()` for Express, `withSettl()` for any Request/Response framework) and let an agent buy it through `@settl/client` or any MCP client. The [quickstart](https://github.com/migsrvr/settl.ai/blob/master/docs/QUICKSTART.md) walks through it, and every snippet in it is run against the sandbox by a test. The packages are not published to npm yet.
+
+### MCP for agents
+
+The hosted MCP at `/mcp` tells agents what they can buy and how. `settl_list_services` returns each service's description, input JSON Schema and an example, and every service is also its own typed tool. Input that does not match a service's schema is refused before any payment. Results and errors carry a `next` step, `settl_wait_for_approval` waits on the server for a human decision, and `/llms.txt`, `/mcp/server-card` (SEP-2127) and `/.well-known/ai-catalog.json` let tools discover the gateway. Buyers get copy-paste setup for Claude Code, Codex, Cursor and `@settl/client` on each agent's page.
 
 ### Quality checks
 
@@ -259,7 +276,7 @@ Actual deployed-site captures during submission preparation. Demo organizations 
 
 - Record the required two-minute video with an agent purchase request, receipt/hash, and a refusal or approval.
 - Reconcile the original hosted paid checkout and confirm signed-callback funding end to end. A checkout success redirect alone does not prove escrow funding.
-- Update older outcome-first landing/stage copy and placeholder SDK examples to the current MCP/REST contract and per-call default. Keep the scripted fallback identified.
+- Update older outcome-first landing/stage copy to the per-call default and keep the scripted fallback identified. The landing SDK samples are already the real, tested examples.
 - Add operator reconciliation for pending payments and lifecycle operations, production authentication and a production custody design.
 - Validate demand with API providers and agent operators. Transaction fees or a hosted gateway plan are business-model hypotheses, not implemented billing or validated revenue.
 

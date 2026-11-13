@@ -9,3 +9,4 @@ node_modules
 apps/web/lib/generated/prisma/
 apps/resibo/dist/
 .provider-build-test-*/
+packages/*/dist/

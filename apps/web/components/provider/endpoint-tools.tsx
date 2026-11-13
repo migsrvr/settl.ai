@@ -11,11 +11,21 @@ export function IntegrateSection({ endpoints }: { endpoints: Omit<NonNullable<Aw
   async function copy() { try { await navigator.clipboard.writeText(code); setMessage('Code copied.'); } catch { setMessage('Copy failed. Select the code and copy it manually.'); } }
   return <section aria-labelledby="integration-title" className="flex flex-col gap-4"><h2 id="integration-title" className="text-lg font-medium">Add Settl to your Express server</h2>{endpoint ? <><label htmlFor="integration-endpoint">Endpoint</label><select id="integration-endpoint" value={endpoint.id} onChange={e => { setSelected(e.target.value); setMessage(''); }} className={field}>{endpoints.map(e => <option key={e.id} value={e.id}>{e.name} ({e.route})</option>)}</select><pre className="overflow-x-auto rounded-lg bg-ink p-6 font-mono text-sm text-code">{code}</pre><Button onClick={copy} className="self-start">Copy code</Button><p role="status">{message}</p><p>Set SETTL_API_URL and SETTL_PROVIDER_KEY on your server. The provider key is configured by the operator and is never displayed here. Outcome handlers must return JSON so Settl can verify their results.</p></> : <p>Add an endpoint to see its integration code.</p>}</section>;
 }
+const SERVER_ERRORS: Record<string, string> = {
+  invalid_description: 'The description must be 1 to 500 characters.',
+  invalid_input_schema: 'The input schema must be a JSON Schema object with "type": "object", up to 16 KB.',
+  invalid_example: 'The example input must match the input schema and be at most 4 KB.',
+};
+function optionalJson(text: string, label: string): unknown {
+  if (!text.trim()) return undefined;
+  try { return JSON.parse(text); } catch { throw new Error(`${label} is not valid JSON. Check quotes around keys and strings.`); }
+}
 export function AddRouteForm({ rateCents }: { rateCents: string | null }) {
+  const [description, setDescription] = useState(''); const [inputSchemaText, setInputSchemaText] = useState(''); const [exampleText, setExampleText] = useState('');
   const router = useRouter(); const [name, setName] = useState(''); const [route, setRoute] = useState(''); const [url, setUrl] = useState(''); const [price, setPrice] = useState(''); const [mode, setMode] = useState<'outcome' | 'per_call'>('outcome'); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [saved, setSaved] = useState(false); const [uncertain, setUncertain] = useState(false);
   async function submit(event: FormEvent) { event.preventDefault(); if (busy || uncertain) return; setError(''); setSaved(false); let body;
-    try { if (!name.trim()) throw new Error('Enter a route name.'); if (!/^\/\S*$/.test(route.trim())) throw new Error('Use a path beginning with /, like /translate.'); const providerUrl = checkoutUrl(url.trim()); const priceStroops = phpToExactStroops(price, rateCents); if (BigInt(priceStroops) <= 0n) throw new Error('Enter a price above zero.'); body = { name: name.trim(), method: 'POST', route: route.trim(), url: providerUrl, priceStroops, mode, ...(mode === 'outcome' ? { criteriaId: 'receipt_v1' } : {}) }; } catch (err) { setError(err instanceof Error ? err.message : 'Check the form.'); return; }
-    setBusy(true); try { const response = await fetch('/api/provider/endpoints', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) { setError(typeof data.error === 'string' ? data.error : 'Route could not be saved. Check the fields and try again.'); return; } if (typeof data.endpointId !== 'string') throw new Error(); setSaved(true); setName(''); setRoute(''); setUrl(''); setPrice(''); router.refresh(); } catch { setUncertain(true); setError('The save result is unavailable. Reload and check your priced routes before submitting again.'); router.refresh(); } finally { setBusy(false); }
+    try { if (!name.trim()) throw new Error('Enter a route name.'); if (!/^\/\S*$/.test(route.trim())) throw new Error('Use a path beginning with /, like /translate.'); const providerUrl = checkoutUrl(url.trim()); const priceStroops = phpToExactStroops(price, rateCents); if (BigInt(priceStroops) <= 0n) throw new Error('Enter a price above zero.'); const inputSchema = optionalJson(inputSchemaText, 'Input schema'); const example = optionalJson(exampleText, 'Example input'); body = { name: name.trim(), method: 'POST', route: route.trim(), url: providerUrl, priceStroops, mode, ...(mode === 'outcome' ? { criteriaId: 'receipt_v1' } : {}), ...(description.trim() ? { description: description.trim() } : {}), ...(inputSchema !== undefined ? { inputSchema } : {}), ...(example !== undefined ? { example } : {}) }; } catch (err) { setError(err instanceof Error ? err.message : 'Check the form.'); return; }
+    setBusy(true); try { const response = await fetch('/api/provider/endpoints', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) { setError(typeof data.error === 'string' ? SERVER_ERRORS[data.error] ?? data.error : 'Route could not be saved. Check the fields and try again.'); return; } if (typeof data.endpointId !== 'string') throw new Error(); setSaved(true); setName(''); setRoute(''); setUrl(''); setPrice(''); setDescription(''); setInputSchemaText(''); setExampleText(''); router.refresh(); } catch { setUncertain(true); setError('The save result is unavailable. Reload and check your priced routes before submitting again.'); router.refresh(); } finally { setBusy(false); }
   }
   return (
     <form onSubmit={submit} aria-labelledby="new-route-title" className="flex min-w-0 flex-[1_1_300px] flex-col gap-4 rounded-xl border border-rule bg-surface p-6">
@@ -32,6 +42,19 @@ export function AddRouteForm({ rateCents }: { rateCents: string | null }) {
             <input id={`route-${f.id}`} required value={f.value} onChange={e => f.change(e.target.value)} inputMode={f.id === 'price' ? 'decimal' : undefined} type={f.id === 'url' ? 'url' : 'text'} placeholder={f.placeholder} aria-describedby={f.id === 'url' ? 'route-url-help' : undefined} className={field}/>
           </div>
         ))}
+        <div className="flex flex-col gap-2">
+          <label htmlFor="route-description" className="font-medium">What it does, for agents</label>
+          <textarea id="route-description" value={description} onChange={e => setDescription(e.target.value)} maxLength={500} rows={2} placeholder="Reads a receipt image and returns the merchant, date and total." aria-describedby="route-metadata-help" className={`${field} py-2`}/>
+        </div>
+        <div className="flex flex-col gap-2">
+          <label htmlFor="route-input-schema" className="font-medium">Input schema, JSON</label>
+          <textarea id="route-input-schema" value={inputSchemaText} onChange={e => setInputSchemaText(e.target.value)} rows={4} spellCheck={false} placeholder='{"type":"object","properties":{"image":{"type":"string"}},"required":["image"]}' aria-describedby="route-metadata-help" className={`${field} py-2 font-mono text-sm`}/>
+        </div>
+        <div className="flex flex-col gap-2">
+          <label htmlFor="route-example" className="font-medium">Example input, JSON</label>
+          <textarea id="route-example" value={exampleText} onChange={e => setExampleText(e.target.value)} rows={2} spellCheck={false} placeholder='{"image":"https://example.com/receipt.jpg"}' aria-describedby="route-metadata-help" className={`${field} py-2 font-mono text-sm`}/>
+        </div>
+        <p id="route-metadata-help">Optional. Agents read these to know what to send. When you give a schema, Settl refuses input that does not match it before any payment, so agents are not charged for calls your API would reject.</p>
         <p id="route-url-help">Routes use POST. Set the full URL of your JSON handler. Its origin must match a configured provider origin, such as http://localhost:3001 for the local demo. Ask the operator to configure other origins.</p>
         <fieldset className="flex flex-col gap-3">
           <legend className="mb-2 font-medium">When agents pay</legend>

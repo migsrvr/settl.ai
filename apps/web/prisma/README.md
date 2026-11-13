@@ -1,5 +1,15 @@
 # Database setup
 
+### Endpoint metadata upgrade (prepared, not applied)
+
+`endpoint-metadata-upgrade.sql` adds three nullable columns to `endpoints`: `description`, `input_schema` and `example`. Agents see them through the MCP, and the broker refuses call input that does not match `input_schema` before any payment. Apply it to the intended database **before** deploying code that reads these columns, with database-write authorization, from the repository root:
+
+```sh
+npm exec -w web -- prisma db execute --file prisma/endpoint-metadata-upgrade.sql
+```
+
+It changes no existing data and is a no-op when repeated. Afterwards, rerunning the seed fills metadata for the three demo services only where it is missing. The sandbox (`packages/dev`) picks the columns up from `src/schema.sql`, which is regenerated with `npm run schema -w @settl/dev`.
+
 ### Performance snapshot upgrade (prepared, not applied)
 
 Before deploying the dashboard performance changes to an existing database, review

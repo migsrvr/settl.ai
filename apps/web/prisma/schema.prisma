@@ -134,6 +134,10 @@ model Endpoint {
   mode        PaymentMode
   criteriaId  String?     @map("criteria_id")
   criteria    Json?
+  // Optional guidance for agents (lib/server/service-metadata.ts validates it).
+  description String?
+  inputSchema Json?       @map("input_schema")
+  example     Json?
   active      Boolean     @default(true)
   createdAt   DateTime    @default(now()) @map("created_at")
   provider    Provider    @relation(fields: [providerId], references: [id], onDelete: Restrict)

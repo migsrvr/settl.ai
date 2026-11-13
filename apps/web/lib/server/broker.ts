@@ -5,15 +5,22 @@ import { createStellarClient, loadStellarConfig } from "@settl/stellar";
 import type { NoirClient, TxResult } from "@settl/stellar";
 import { Keypair } from "@stellar/stellar-sdk";
 import type { Prisma, PrismaClient, Quote } from "../generated/prisma/client";
+import { getChainOverride } from "./chain";
+import type { ChainOverride } from "./chain";
 import { getDb } from "./db";
 import { planEffects } from "./events";
 import type { Effect, SettlEvent } from "./events";
 import { nextNonce } from "./nonce";
 import { decide } from "./policy";
+import { validateInput } from "./service-metadata";
 import { decryptWalletSecret } from "./wallets";
 
 export class BrokerError extends Error {
-  constructor(public readonly status: number, public readonly code: string) { super(code); }
+  constructor(public readonly status: number, public readonly code: string) {
+    super(code);
+    // The MCP layer exposes allow-listed broker codes by this name, without importing the class.
+    this.name = "BrokerError";
+  }
 }
 
 export interface CallParams {
@@ -28,7 +35,7 @@ export interface VerifyParams {
   endpointId?: string;
 }
 export type CallResult =
-  | { status: "blocked" | "declined"; reason: string }
+  | { status: "blocked" | "declined"; reason: string; issues?: string[] }
   | { status: "not_charged"; reason: string; receipt?: Receipt; data?: unknown; effects?: Effect[] }
   | { status: "approval_required"; reason: string; approvalId: string }
   | { status: "pending"; reason: string; quoteId: string; txHash?: string }
@@ -305,6 +312,13 @@ export function createBroker(options: BrokerOptions) {
   }
 
   async function executeCall(params: CallParams): Promise<CallResult> {
+    // Per-call services charge even when the provider rejects bad input, so input that cannot match the
+    // provider's declared schema is refused here, before any lock, quote, nonce or authorization.
+    const declared = await db.endpoint.findUnique({ where: { id: params.endpointId }, select: { inputSchema: true } });
+    if (declared?.inputSchema) {
+      const check = await validateInput(declared.inputSchema, params.input);
+      if (!check.ok) return { status: "declined", reason: "invalid_input", issues: check.issues };
+    }
     type Prepared = { agent: AgentWithPolicy; endpoint: EndpointWithProvider; quote: Quote; signer: Keypair | null; request: ReturnType<typeof providerRequest>; reservationId?: string };
     const prepared = await db.$transaction(async (tx): Promise<Prepared | CallResult> => {
       await lockAgent(tx, params.agentId);
@@ -466,7 +480,17 @@ export function createBroker(options: BrokerOptions) {
 }
 
 let singleton: ReturnType<typeof createBroker> | undefined;
+let overrideBroker: { chain: ChainOverride; db: PrismaClient; broker: ReturnType<typeof createBroker> } | undefined;
 function broker() {
+  // A host-supplied chain (the sandbox) bypasses Stellar configuration entirely.
+  const override = getChainOverride();
+  if (override) {
+    const db = getDb();
+    if (overrideBroker?.chain !== override || overrideBroker.db !== db) {
+      overrideBroker = { chain: override, db, broker: createBroker({ db, chain: override.chain, escrowContract: override.escrowContract }) };
+    }
+    return overrideBroker.broker;
+  }
   if (!singleton) {
     const config = loadStellarConfig();
     const relayer = process.env.SETTL_RELAYER_SECRET || process.env.SETTL_TREASURY_SECRET;

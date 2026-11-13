@@ -1,21 +1,8 @@
-import { HEADER_RECEIPT, ReceiptSchema } from "@settl/core";
-import type { PaymentHeader } from "@settl/core";
 import type { NextFunction, Request, Response } from "express";
-import { postJson } from "./settlApi";
+import { HEADER_RECEIPT, receiptHeaderValue, settleOutcome, type Gateway, type OutcomeIdentity } from "./core";
 
-type Commit = Extract<PaymentHeader, { kind: "commit" }>;
-function object(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
-
-/** Outcome providers send JSON; output stays buffered until settlement is known. */
-export async function handleCommit(req: Request, res: Response, next: NextFunction, proof: Commit, endpointId: string, apiUrl: string, headers: Record<string, string>): Promise<void> {
-  const identity = { quoteId: proof.quoteId, reservationId: proof.reservationId, endpointId };
-  let preflight: unknown;
-  try { preflight = await postJson(`${apiUrl}/api/verify`, { ...identity, checkOnly: true }, headers); }
-  catch { res.status(502).json({ error: "Payment service unavailable" }); return; }
-  if (!object(preflight) || preflight.ok !== true || preflight.quoteId !== proof.quoteId || preflight.reservationId !== proof.reservationId) {
-    res.status(402).json({ error: object(preflight) && typeof preflight.error === "string" && preflight.error ? preflight.error : "Invalid payment commitment" });
-    return;
-  }
+/** Outcome providers send JSON; output stays buffered until settlement is known. The reservation is already confirmed. */
+export async function handleCommit(req: Request, res: Response, next: NextFunction, gateway: Gateway, identity: OutcomeIdentity): Promise<void> {
   const sendJson = res.json.bind(res);
   let sent = false;
   let completed!: () => void;
@@ -37,12 +24,9 @@ export async function handleCommit(req: Request, res: Response, next: NextFuncti
       try {
         // Verify and deliver the same immutable JSON snapshot.
         const result: unknown = JSON.parse(JSON.stringify(body));
-        const settlement = await postJson(`${apiUrl}/api/verify`, { ...identity, result }, headers, 120_000);
-        if (!object(settlement) || !["pass", "fail"].includes(String(settlement.verification))) throw new Error("Settlement unresolved");
-        const receipt = ReceiptSchema.parse(settlement.receipt);
-        if (receipt.quoteId !== proof.quoteId || settlement.verification === "pass" && (receipt.status !== "paid" || !/^[a-f0-9]{64}$/.test(receipt.txHash ?? "")) || settlement.verification === "fail" && (receipt.status !== "not_charged" || receipt.amountStroops !== "0")) throw new Error("Settlement mismatch");
+        const receipt = await settleOutcome(gateway, identity, result);
         req.settlReceipt = receipt;
-        res.setHeader(HEADER_RECEIPT, Buffer.from(JSON.stringify(receipt), "utf8").toString("base64"));
+        res.setHeader(HEADER_RECEIPT, receiptHeaderValue(receipt));
         res.json = sendJson;
         sendJson(result);
       } catch {

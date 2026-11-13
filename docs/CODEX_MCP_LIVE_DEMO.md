@@ -252,6 +252,8 @@ The expected tools are:
 | `settl_call` | Request a service purchase under the authenticated agent's policy. |
 | `settl_check_approval` | Read one of this agent's approvals. |
 | `settl_receipts` | Read terminal payment/verification receipts for this agent. |
+| `settl_wait_for_approval` | Wait up to 55 seconds for a human to approve or decline; never pays. |
+| `<provider>_<service>` | One typed tool per service, with its input schema. Same payment path as `settl_call`. |
 
 MCP authentication determines the agent identity. Codex does not supply an arbitrary `agentId` to choose whose money to spend. No Settl SDK installation is required in Codex for this HTTP MCP connection.
 

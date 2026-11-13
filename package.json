@@ -15,8 +15,13 @@
     "build": "npm run build -w web",
     "lint": "npm run lint -w web",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present && node --test scripts/publish-manifest.test.mjs",
     "demo": "python3 scripts/run_demo.py",
-    "demo:fast": "python3 scripts/run_demo.py --no-pause --auto-approve"
+    "demo:fast": "python3 scripts/run_demo.py --no-pause --auto-approve",
+    "build:packages": "npm run build -w @settl/core -w @settl/sdk -w @settl/client",
+    "sandbox": "npm run start -w @settl/dev --"
+  },
+  "devDependencies": {
+    "tsup": "^9.0.0"
   }
 }

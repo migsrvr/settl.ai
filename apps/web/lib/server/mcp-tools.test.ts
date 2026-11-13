@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   db: {
     endpoint: { findMany: vi.fn() },
-    agent: { findUnique: vi.fn() },
+    agent: { findUnique: vi.fn(), updateMany: vi.fn() },
     payment: { findMany: vi.fn() },
     reservation: { aggregate: vi.fn() },
     approval: { findMany: vi.fn(), findFirst: vi.fn() },
@@ -21,12 +21,13 @@ vi.mock('@settl/stellar', () => ({
   createStellarClient: () => ({ balanceOf: mocks.balanceOf }),
 }));
 
-import { createAgentMcpServer } from './mcp-tools';
+import { createAgentMcpServer, type AgentMcpOptions } from './mcp-tools';
+import { BUY_GUIDE, TOOL_GUIDE } from './discovery';
 
 const connections: { client: Client; handler: ReturnType<typeof createMcpHandler> }[] = [];
 
-async function connect(agentId = 'agent-one') {
-  const handler = createMcpHandler(() => createAgentMcpServer(agentId), { responseMode: 'sse' });
+async function connect(agentId = 'agent-one', options: AgentMcpOptions = {}) {
+  const handler = createMcpHandler(() => createAgentMcpServer(agentId, options), { responseMode: 'sse' });
   const client = new Client(
     { name: 'settl-tool-tests', version: '1.0.0' },
     { versionNegotiation: { mode: 'auto' } },
@@ -52,11 +53,12 @@ afterEach(async () => {
 });
 
 describe('agent MCP tools', () => {
-  it('advertises exactly the six validated tools', async () => {
+  it('advertises exactly the seven validated tools', async () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name).sort()).toEqual([
       'settl_call', 'settl_check_approval', 'settl_get_budget', 'settl_list_services', 'settl_quote', 'settl_receipts',
+      'settl_wait_for_approval',
     ]);
     expect(tools.find((tool) => tool.name === 'settl_call')?.inputSchema.required).toContain('serviceId');
     expect(JSON.stringify(tools)).not.toContain('agentId');
@@ -74,6 +76,16 @@ describe('agent MCP tools', () => {
       displayPrice: { currency: 'PHP', amount: '1.85' }, amountStroops: '1234567',
     }] });
     expect(JSON.stringify(result)).not.toContain('secret-wallet');
+  });
+
+  it('tells agents what input a service takes when the provider described it', async () => {
+    const inputSchema = { type: 'object', properties: { city: { type: 'string' } } };
+    mocks.db.endpoint.findMany.mockResolvedValue([{
+      id: 'geo', name: 'Lookup', providerId: 'geoph', price: 15n, mode: 'per_call',
+      description: 'Looks up a city.', inputSchema, example: { city: 'Makati' }, provider: { displayName: 'GeoPH' },
+    }]);
+    const result = await (await connect()).callTool({ name: 'settl_list_services', arguments: {} });
+    expect(result.structuredContent).toMatchObject({ services: [{ id: 'geo', description: 'Looks up a city.', inputSchema, example: { city: 'Makati' } }] });
   });
 
   it('keeps stroop and PHP amounts exact beyond the safe integer range', async () => {
@@ -105,14 +117,14 @@ describe('agent MCP tools', () => {
     expect(mocks.executeCall).toHaveBeenCalledWith({
       agentId: 'agent-one', endpointId: 'service-one', input: { query: 'hello' }, maxPricePhp: '1.50', approvalId: 'approval-one',
     });
-    expect(result.structuredContent).toEqual({ status: 'approval_required', approvalId: 'approval-one' });
+    expect(result.structuredContent).toMatchObject({ status: 'approval_required', approvalId: 'approval-one', next: expect.stringMatching(/approv/i) });
   });
 
   it('rejects invalid broker quote output without exposing unexpected fields', async () => {
     mocks.createQuote.mockResolvedValue({ quoteId: 'quote-invalid', privateCredential: 'never-expose-quote' });
     const result = await (await connect()).callTool({ name: 'settl_quote', arguments: { serviceId: 'service-one' } });
     expect(result.isError).toBe(true);
-    expect(result.structuredContent).toEqual({ error: 'TOOL_FAILED' });
+    expect(result.structuredContent).toMatchObject({ error: 'TOOL_FAILED' });
     expect(JSON.stringify(result)).not.toContain('never-expose-quote');
   });
 
@@ -139,7 +151,7 @@ describe('agent MCP tools', () => {
       where: { id: 'other-approval', agentId: 'agent-one' },
     }));
     expect(result.isError).toBe(true);
-    expect(result.structuredContent).toEqual({ error: 'APPROVAL_NOT_FOUND' });
+    expect(result.structuredContent).toMatchObject({ error: 'APPROVAL_NOT_FOUND', next: expect.any(String) });
   });
 
   it('serializes approval amounts and dates using explicit public fields', async () => {
@@ -288,8 +300,30 @@ describe('agent MCP tools', () => {
     mocks.executeCall.mockRejectedValue(new Error('database password super-secret'));
     const result = await (await connect()).callTool({ name: 'settl_call', arguments: { serviceId: 'service-one' } });
     expect(result.isError).toBe(true);
-    expect(result.structuredContent).toEqual({ error: 'TOOL_FAILED' });
+    expect(result.structuredContent).toMatchObject({ error: 'TOOL_FAILED', retryable: true });
     expect(JSON.stringify(result)).not.toContain('super-secret');
+  });
+
+  it('names an allow-listed broker failure with a next step instead of TOOL_FAILED', async () => {
+    mocks.executeCall.mockRejectedValue(Object.assign(new Error('invalid_max_price'), { name: 'BrokerError', status: 400, code: 'invalid_max_price' }));
+    const result = await (await connect()).callTool({ name: 'settl_call', arguments: { serviceId: 'service-one' } });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ error: 'invalid_max_price', retryable: false, next: expect.stringMatching(/\S/) });
+  });
+
+  it('declares the settl_call output shape and never returns internal automation effects', async () => {
+    const client = await connect();
+    const { tools } = await client.listTools();
+    expect(tools.find((tool) => tool.name === 'settl_call')?.outputSchema?.properties).toHaveProperty('status');
+    mocks.executeCall.mockResolvedValue({
+      status: 'paid', receipt: { quoteId: 'q1', status: 'paid', amountStroops: '100', txHash: 'a'.repeat(64), checks: [] },
+      data: { total: 1 }, effects: [{ kind: 'webhook', secretUrl: 'https://hooks.example/private' }],
+    });
+    const result = await client.callTool({ name: 'settl_call', arguments: { serviceId: 'service-one' } });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ status: 'paid', data: { total: 1 } });
+    expect(JSON.stringify(result)).not.toContain('effects');
+    expect(JSON.stringify(result)).not.toContain('hooks.example');
   });
 
   it('rejects invalid exchange-rate configuration without returning fabricated prices', async () => {
@@ -297,5 +331,174 @@ describe('agent MCP tools', () => {
     mocks.db.endpoint.findMany.mockResolvedValue([]);
     const result = await (await connect()).callTool({ name: 'settl_list_services', arguments: {} });
     expect(result.isError).toBe(true);
+  });
+});
+
+describe('typed service tools', () => {
+  const geo = {
+    id: 'geoph_lookup', name: 'GeoPH lookup', providerId: 'geoph', providerName: 'GeoPH', price: 5333334n, mode: 'per_call',
+    description: 'Looks up a city.', example: { city: 'Makati' },
+    inputSchema: { type: 'object', properties: { city: { type: 'string', minLength: 1 } }, required: ['city'], additionalProperties: false },
+  };
+  const plain = { ...geo, id: 'resibo_parse', name: 'Receipt OCR', providerId: 'resibo', providerName: 'ResiboAI', description: null, inputSchema: null, example: null };
+  const paid = { status: 'paid', receipt: { quoteId: 'q1', status: 'paid', amountStroops: '5333334', txHash: 'a'.repeat(64) }, data: { province: 'Metro Manila' }, effects: [] };
+
+  it('adds one tool per service next to the settl tools', async () => {
+    const { tools } = await (await connect('agent-one', { services: [geo, plain] })).listTools();
+    const names = tools.map((tool) => tool.name);
+    expect(names).toEqual(expect.arrayContaining(['settl_call', 'settl_list_services', 'geoph_lookup', 'resibo_receipt_ocr']));
+  });
+
+  it('tells the agent what the service does, what it costs and what input it takes', async () => {
+    const { tools } = await (await connect('agent-one', { services: [geo] })).listTools();
+    const tool = tools.find((candidate) => candidate.name === 'geoph_lookup');
+    expect(tool?.description).toMatch(/Looks up a city/);
+    expect(tool?.description).toMatch(/PHP 8\.00/);
+    expect(tool?.annotations).toMatchObject({ destructiveHint: true, openWorldHint: true });
+    expect(tool?.inputSchema.properties).toMatchObject({ input: { properties: { city: { type: 'string' } } } });
+    expect(tool?.inputSchema.required).toContain('input');
+    expect(tool?.outputSchema?.properties).toHaveProperty('status');
+  });
+
+  it('buys through the same broker path with the service fixed by the tool', async () => {
+    mocks.executeCall.mockResolvedValue(paid);
+    const result = await (await connect('agent-one', { services: [geo] })).callTool({ name: 'geoph_lookup', arguments: { input: { city: 'Makati' }, maxPricePhp: '10.00' } });
+    expect(mocks.executeCall).toHaveBeenCalledWith({ agentId: 'agent-one', endpointId: 'geoph_lookup', input: { city: 'Makati' }, maxPricePhp: '10.00' });
+    expect(result.structuredContent).toMatchObject({ status: 'paid', data: { province: 'Metro Manila' } });
+    expect(JSON.stringify(result)).not.toContain('effects');
+  });
+
+  it('refuses input that breaks the service schema before reaching the broker', async () => {
+    const result = await (await connect('agent-one', { services: [geo] })).callTool({ name: 'geoph_lookup', arguments: { input: { town: 'Makati' } } });
+    expect(result.isError).toBe(true);
+    expect(mocks.executeCall).not.toHaveBeenCalled();
+  });
+
+  it('keeps a service usable with free-form input when its stored schema cannot be compiled', async () => {
+    mocks.executeCall.mockResolvedValue(paid);
+    const broken = { ...geo, inputSchema: { type: 'object', properties: { city: { $ref: '#/nowhere' } } } };
+    const client = await connect('agent-one', { services: [broken] });
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('geoph_lookup');
+    await client.callTool({ name: 'geoph_lookup', arguments: { input: { city: 'Makati' } } });
+    expect(mocks.executeCall).toHaveBeenCalled();
+  });
+
+  it('caps typed tools at 40 so large catalogs stay usable through settl_call', async () => {
+    const many = Array.from({ length: 45 }, (_, index) => ({ ...plain, id: `svc${index}`, name: `Service ${index}` }));
+    const { tools } = await (await connect('agent-one', { services: many })).listTools();
+    expect(tools.filter((tool) => !tool.name.startsWith('settl_'))).toHaveLength(40);
+  });
+});
+
+describe('settl_wait_for_approval', () => {
+  const approval = (status: string, expiresAt = new Date(Date.now() + 60_000)) => ({
+    id: 'approval-one', providerId: 'provider-one', quoteId: 'quote-one', amount: 10n, status, expiresAt,
+  });
+
+  it('returns at once when a human has already decided', async () => {
+    mocks.db.approval.findFirst.mockResolvedValue(approval('approved'));
+    const result = await (await connect()).callTool({ name: 'settl_wait_for_approval', arguments: { approvalId: 'approval-one' } });
+    expect(result.structuredContent).toMatchObject({ decided: true, approval: { status: 'approved' }, next: expect.stringMatching(/approvalId/) });
+    expect(mocks.db.approval.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'approval-one', agentId: 'agent-one' } }));
+  });
+
+  it('waits on the server until the decision arrives', async () => {
+    mocks.db.approval.findFirst
+      .mockResolvedValueOnce(approval('pending')).mockResolvedValueOnce(approval('pending')).mockResolvedValue(approval('declined'));
+    const result = await (await connect('agent-one', { approvalPollMs: 5 })).callTool({ name: 'settl_wait_for_approval', arguments: { approvalId: 'approval-one' } });
+    expect(result.structuredContent).toMatchObject({ decided: true, approval: { status: 'declined' } });
+    expect(mocks.db.approval.findFirst).toHaveBeenCalledTimes(3);
+  });
+
+  it('gives the approval back undecided when the wait runs out', async () => {
+    mocks.db.approval.findFirst.mockResolvedValue(approval('pending'));
+    const result = await (await connect('agent-one', { approvalPollMs: 50 })).callTool({ name: 'settl_wait_for_approval', arguments: { approvalId: 'approval-one', timeoutSeconds: 1 } });
+    expect(result.structuredContent).toMatchObject({ decided: false, approval: { status: 'pending' } });
+  });
+
+  it('reports an approval past its expiry as expired even before the database is updated', async () => {
+    mocks.db.approval.findFirst.mockResolvedValue(approval('pending', new Date(Date.now() - 1000)));
+    const result = await (await connect()).callTool({ name: 'settl_wait_for_approval', arguments: { approvalId: 'approval-one' } });
+    expect(result.structuredContent).toMatchObject({ decided: true, approval: { status: 'expired' } });
+  });
+
+  it("never reveals another agent's approval", async () => {
+    mocks.db.approval.findFirst.mockResolvedValue(null);
+    const result = await (await connect()).callTool({ name: 'settl_wait_for_approval', arguments: { approvalId: 'other' } });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ error: 'APPROVAL_NOT_FOUND' });
+  });
+
+  it.each([{ timeoutSeconds: 0 }, { timeoutSeconds: 56 }, { timeoutSeconds: 1.5 }])('rejects an out-of-range wait %o', async (args) => {
+    const result = await (await connect()).callTool({ name: 'settl_wait_for_approval', arguments: { approvalId: 'approval-one', ...args } });
+    expect(result.isError).toBe(true);
+    expect(mocks.db.approval.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+describe('budget balance snapshot', () => {
+  const policy = { asset: 'XLM', maxAmount: 500n, dailyBudget: 100n, maxPricePerCall: 50n, autoApproveUpTo: 25n, expiresAt: new Date('2027-01-01T00:00:00Z'), allowlist: [] };
+  beforeEach(() => {
+    mocks.db.payment.findMany.mockResolvedValue([]);
+    mocks.db.reservation.aggregate.mockResolvedValue({ _sum: { amount: null } });
+    mocks.db.approval.findMany.mockResolvedValue([]);
+  });
+
+  it('reuses a balance observed in the last 15 seconds instead of reading the chain again', async () => {
+    mocks.db.agent.findUnique.mockResolvedValue({ deviceHash: 'device-fresh', cachedBalance: 70n, balanceUpdatedAt: new Date(Date.now() - 2_000), policy });
+    const result = await (await connect()).callTool({ name: 'settl_get_budget', arguments: {} });
+    expect(mocks.balanceOf).not.toHaveBeenCalled();
+    expect(result.structuredContent).toMatchObject({ balanceStroops: '70', balanceSource: 'cache', balanceAsOf: expect.any(String) });
+  });
+
+  it('reads and stores a fresh balance when the snapshot is old', async () => {
+    mocks.db.agent.findUnique.mockResolvedValue({ deviceHash: 'device-old', cachedBalance: 70n, balanceUpdatedAt: new Date(Date.now() - 60_000), policy });
+    mocks.balanceOf.mockResolvedValue(90n);
+    const result = await (await connect()).callTool({ name: 'settl_get_budget', arguments: {} });
+    expect(mocks.balanceOf).toHaveBeenCalledWith('device-old');
+    expect(mocks.db.agent.updateMany).toHaveBeenCalled();
+    expect(result.structuredContent).toMatchObject({ balanceStroops: '90', balanceSource: 'chain' });
+  });
+
+  it('says the balance is temporarily unavailable rather than inventing one', async () => {
+    mocks.db.agent.findUnique.mockResolvedValue({ deviceHash: 'device-down', cachedBalance: null, balanceUpdatedAt: null, policy });
+    mocks.balanceOf.mockRejectedValue(new Error('rpc down'));
+    const result = await (await connect()).callTool({ name: 'settl_get_budget', arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ error: 'BALANCE_UNAVAILABLE', retryable: true });
+  });
+});
+
+describe('guidance for agents', () => {
+  const service = {
+    id: 'geoph_lookup', name: 'GeoPH lookup', providerId: 'geoph', providerName: 'GeoPH', price: 5333334n, mode: 'per_call',
+    description: 'Looks up a city.', inputSchema: { type: 'object' }, example: { city: 'Makati' },
+  };
+
+  it('keeps the published tool guide in step with the tools actually offered', async () => {
+    const { tools } = await (await connect()).listTools();
+    expect(TOOL_GUIDE.map(([name]) => name).sort()).toEqual(tools.map((tool) => tool.name).sort());
+  });
+
+  it('offers the catalog and a buying guide as resources', async () => {
+    const client = await connect('agent-one', { services: [service] });
+    const { resources } = await client.listResources();
+    expect(resources.map((resource) => resource.uri).sort()).toEqual(['settl://guide', 'settl://services']);
+    const guide = await client.readResource({ uri: 'settl://guide' });
+    expect((guide.contents[0] as { text: string }).text).toBe(BUY_GUIDE);
+    const catalog = await client.readResource({ uri: 'settl://services' });
+    const parsed = JSON.parse((catalog.contents[0] as { text: string }).text);
+    expect(parsed.services).toEqual([expect.objectContaining({
+      id: 'geoph_lookup', tool: 'geoph_lookup', providerName: 'GeoPH', description: 'Looks up a city.',
+      displayPrice: { currency: 'PHP', amount: '8.00' }, example: { city: 'Makati' },
+    })]);
+  });
+
+  it('offers a buy_service prompt that frames the task with the safe buying steps', async () => {
+    const prompt = await (await connect()).getPrompt({ name: 'buy_service', arguments: { task: 'Read this receipt', maxPricePhp: '5.00' } });
+    const text = (prompt.messages[0]?.content as { text: string }).text;
+    expect(text).toContain('Read this receipt');
+    expect(text).toContain('5.00');
+    expect(text).toContain('settl_list_services');
   });
 });

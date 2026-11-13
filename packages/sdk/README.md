@@ -13,6 +13,41 @@ app.post("/parse-receipt", settl({ endpointId: "registered-endpoint-id" }), (req
 });
 ```
 
+## Describe the endpoint in code
+
+Instead of copying an `endpointId` from the dashboard, describe the endpoint and Settl registers it the first time it is needed:
+
+```ts
+const ocr = settl({ provider: "acme", name: "Receipt OCR", price: "2.00", url: `${PUBLIC_URL}/parse-receipt` });
+app.post("/parse-receipt", ocr, (req, res) => res.json(parseReceipt(req.body)));
+await ocr.register();   // optional: list it now, so agents can find it before any request
+```
+
+- Optional `description`, `inputSchema` (JSON Schema, object root) and `example` tell agents what the service does and what to send. Settl refuses non-matching input before any payment. On an existing endpoint, registration fills metadata it does not have yet and reports any difference as `drift` without overwriting it.
+- `price` is pesos per call. `url` is the public URL Settl calls after payment; its path becomes the route.
+- Registration is lazy (never at import time, so a Next.js build makes no network call) and shared: concurrent requests make one attempt, and a failed attempt is retried on the next request.
+- Registering again is safe. An existing endpoint's price, name and URL are never changed through the provider key: if your code differs, the SDK logs one warning and the registered values stay. Change them in the dashboard.
+- Per-call endpoints only. Outcome-billed endpoints are still registered in the dashboard and used by `endpointId`.
+- A deployed gateway requires `provider` to exist already and `url` to be on the operator's allowed origins. The local sandbox creates the provider for you.
+- `registerEndpoint(options)` does the same without a middleware.
+
+## Any framework with Request and Response
+
+`withSettl(handler, options)` gates a web-standard handler, so it works in Next.js route handlers, Hono, Bun, Deno and Workers. The handler receives the confirmed `receipt`, plus the framework's own second argument as `context`.
+
+```ts
+import { withSettl } from "@settl/sdk";
+
+export const POST = withSettl(
+  async (request, { receipt }) => Response.json({ paidWith: receipt?.txHash }),
+  { provider: "acme", name: "Receipt OCR", price: "2.00", url: `${PUBLIC_URL}/api/parse-receipt` },
+);
+```
+
+Outcome-billed endpoints must return a JSON response; it is held until Settl has verified exactly that output, then returned with the receipt header. Anything else answers 502. `withSettl` returns the same payment results and headers as `settl`.
+
+## Express options
+
 `settl({ endpointId, apiUrl?, apiKey? })` returns an Express `RequestHandler`.
 `apiUrl` defaults to `SETTL_API_URL` or `http://localhost:3000`; `apiKey` defaults
 to `SETTL_PROVIDER_KEY`. When present, the key is sent as a Bearer credential.

@@ -29,6 +29,14 @@ function database() {
         endpoints.set(String(where.id), { ...row, ...data });
         return { count: 1 };
       }),
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const row = endpoints.get(where.id);
+        return row ? { description: row.description ?? null, inputSchema: row.inputSchema ?? null, example: row.example ?? null } : null;
+      }),
+      update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+        endpoints.set(where.id, { ...endpoints.get(where.id), ...data });
+        return endpoints.get(where.id);
+      }),
     }, agent: { upsert: upsert(agents) },
     policy: { upsert: upsert() }, agentApiKey: { upsert: upsert() },
     providerSettings: { upsert: upsert() }, agentSettings: { upsert: upsert() },
@@ -143,5 +151,15 @@ describe("database demo seed", () => {
     await seedDemo(client, { phpPerXlm: 15, apiKey: "stl_agent_bookkeeper_demo" });
     expect(endpoints.get("resibo_parse")).toMatchObject({ url: "http://localhost:3001/parse-receipt", price: 99n });
     expect(endpoints.get("geoph_lookup")?.url).toBe("https://provider.example/lookup");
+  });
+
+  it("describes the demo services for agents, filling only what an older database is missing", async () => {
+    vi.stubEnv("WALLET_ENC_KEY", "a".repeat(64));
+    const { client, endpoints } = database();
+    endpoints.set("geoph_lookup", { id: "geoph_lookup", url: "http://localhost:3001/lookup", description: "Written by the provider", inputSchema: null, example: null });
+    await seedDemo(client, { phpPerXlm: 15, apiKey: "stl_agent_seed_metadata" });
+    expect(endpoints.get("resibo_parse")).toMatchObject({ description: expect.stringMatching(/receipt/i), example: { fixture: "clean" } });
+    expect(endpoints.get("geoph_lookup")).toMatchObject({ description: "Written by the provider", example: { city: "Makati" } });
+    expect((endpoints.get("geoph_lookup")?.inputSchema as { properties: object }).properties).toHaveProperty("city");
   });
 });

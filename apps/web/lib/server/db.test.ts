@@ -29,6 +29,16 @@ describe("database singleton", () => {
     expect(reloaded.getDb()).toBe(client);
   });
 
+  it("lets a host supply its own client and restores the default when cleared", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const { getDb, setDb } = await import("./db");
+    const custom = { custom: true } as never;
+    setDb(custom);
+    expect(getDb()).toBe(custom);
+    setDb(undefined);
+    expect(() => getDb()).toThrow("DATABASE_URL is required");
+  });
+
   it("rejects browser access", async () => {
     vi.stubGlobal("window", {});
     try {
